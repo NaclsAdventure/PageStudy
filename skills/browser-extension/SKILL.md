@@ -106,7 +106,7 @@ README 至少覆盖：安装/加载、配置、主要功能、数据与隐私、
 
 ## 硬规则
 
-- `chrome.sidePanel.open()` 和 `setPanelBehavior()` 需要 Chromium 116+；`side_panel` 本身虽从 114 开始，但点击图标打开侧栏的行为按 116 设计。
+- 依赖 `chrome.sidePanel.open()` 或 `setPanelBehavior()` 时，最低版本按 Chromium 116+ 设计。
 - content script 的构建产物必须是单文件 IIFE；不要让它产生动态 `import()` 或依赖页面加载的 chunk。
 - service worker 内存会在空闲后丢失；活动请求、用户选择、待处理状态要落盘或在端口重建时恢复。
 - 扩展包内只运行静态打包代码；远程脚本、`eval`、动态 `new Function` 都不进入 MV3 扩展。
