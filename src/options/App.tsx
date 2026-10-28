@@ -157,12 +157,15 @@ export default function OptionsApp() {
       const health: BridgeHealth = {
         ok: Boolean(response.ok),
         larkCli: Boolean(response.larkCli),
+        wiki: Boolean(response.wiki),
         notion: Boolean(response.notion),
         markdown: Boolean(response.markdown),
         markdownDir: response.markdownDir,
         version: response.version,
         syncPending: response.syncPending,
         syncError: response.syncError,
+        wikiPending: response.wikiPending,
+        wikiError: response.wikiError,
         error: response.error,
       };
       setBridge(health);
@@ -177,7 +180,7 @@ export default function OptionsApp() {
         flash(health.error ?? '桥接服务未运行。', true);
       }
     } catch (error) {
-      setBridge({ ok: false, larkCli: false, notion: false, markdown: false, error: asErrorMessage(error) });
+      setBridge({ ok: false, larkCli: false, wiki: false, notion: false, markdown: false, error: asErrorMessage(error) });
       flash(asErrorMessage(error), true);
     } finally {
       setBridgeLoading(false);
@@ -356,7 +359,7 @@ export default function OptionsApp() {
           ))}
         </nav>
         <div className="options-sidebar-footer">
-          <span>v0.2.0 · MV3</span>
+          <span>v0.3.0 · MV3</span>
           <button type="button" onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') })}>
             打开记录库
           </button>
@@ -549,6 +552,25 @@ export default function OptionsApp() {
                   </label>
                   <small>失败会保留队列并退避重试；扩展启动时补传。</small>
                 </div>
+                <div className="field">
+                  <span>保存后自动更新飞书 Wiki</span>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={settings.documents.wikiAutoSync}
+                      onChange={(event) =>
+                        setSettings({
+                          ...settings,
+                          documents: { ...settings.documents, wikiAutoSync: event.target.checked },
+                        })
+                      }
+                    />
+                    记录变化后，自动同步到飞书个人文档库的 PageStudy Wiki
+                  </label>
+                  <small>
+                    需要桥接的 lark-cli 已授权 wiki 权限；首次发布会创建根节点和分类，之后按内容哈希覆盖更新。
+                  </small>
+                </div>
                 <label className="field full">
                   <span>Notion 父页面 ID</span>
                   <input
@@ -596,6 +618,7 @@ export default function OptionsApp() {
               {bridge?.ok ? (
                 <div className="health-grid">
                   <span className={bridge.larkCli ? 'health ok' : 'health bad'}>飞书 {bridge.larkCli ? '就绪' : '未就绪'}</span>
+                  <span className={bridge.wiki ? 'health ok' : 'health bad'}>飞书 Wiki 接口 {bridge.wiki ? '就绪' : '未就绪'}</span>
                   <span className={bridge.notion ? 'health ok' : 'health bad'}>Notion {bridge.notion ? '已配置' : '未配置 Token'}</span>
                   <span className={bridge.markdown ? 'health ok' : 'health bad'}>
                     本地 Markdown {bridge.markdown ? `已启用：${bridge.markdownDir ?? ''}` : '未配置目录'}
@@ -603,6 +626,11 @@ export default function OptionsApp() {
                   {bridge.syncPending || bridge.syncError ? (
                     <span className="health bad">
                       自动同步队列：待处理 {bridge.syncPending ?? 0} · 失败 {bridge.syncError ?? 0}
+                    </span>
+                  ) : null}
+                  {bridge.wikiPending || bridge.wikiError ? (
+                    <span className="health bad">
+                      飞书 Wiki 队列：待处理 {bridge.wikiPending ?? 0} · 失败 {bridge.wikiError ?? 0}
                     </span>
                   ) : null}
                 </div>

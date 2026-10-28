@@ -11,6 +11,8 @@ import type {
   SummarizeResponse,
   SyncEnqueueResponse,
   TestProviderResponse,
+  WikiPublishMessageResponse,
+  WikiStateResponse,
 } from '../shared/messages';
 import {
   getActiveProvider,
@@ -31,6 +33,14 @@ import {
   flushSyncQueue,
   removeRecordSyncJob,
 } from './sync';
+import {
+  clearWikiQueue,
+  flushWikiQueue,
+  getWikiPublishState,
+  publishWikiNow,
+  requestWikiPublish,
+  wikiQueueStatus,
+} from './wiki-sync';
 import { getRecord } from '../shared/db';
 import { isDocumentTarget } from '../shared/documents';
 
@@ -83,22 +93,26 @@ chrome.runtime.onInstalled.addListener(() => {
   void setupSidePanel();
   void setupContextMenu();
   void flushSyncQueue();
+  void flushWikiQueue();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   void setupSidePanel();
   // MV3 的 service worker 不能保证在浏览器关闭时完成网络请求；启动时补传上次待同步队列。
   void flushSyncQueue();
+  void flushWikiQueue();
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'pagestudy-sync') void flushSyncQueue();
+  if (alarm.name === 'pagestudy-wiki-sync') void flushWikiQueue();
 });
 
 if (chrome.runtime.onSuspend) {
   chrome.runtime.onSuspend.addListener(() => {
     // 浏览器关闭/worker 挂起前的 best-effort 冲刷；真正的可靠性来自保存后立即同步和启动补传。
     void flushSyncQueue(true);
+    void flushWikiQueue(true);
   });
 }
 
@@ -135,6 +149,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
         case 'PS_SAVE_SETTINGS': {
           const settings = normalizeSettings(message.settings);
           await saveSettings(settings);
+          if (!settings.documents.wikiAutoSync) await clearWikiQueue();
           sendResponse({ ok: true, settings });
           return;
         }
@@ -178,7 +193,14 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
           const settings = await loadSettings();
           const health: BridgeHealthResponse = await checkBridge(settings.feishu);
           const queue = await autoSyncStatus();
-          sendResponse({ ...health, syncPending: queue.pending, syncError: queue.error });
+          const wikiQueue = await wikiQueueStatus();
+          sendResponse({
+            ...health,
+            syncPending: queue.pending,
+            syncError: queue.error,
+            wikiPending: wikiQueue.pending,
+            wikiError: wikiQueue.error,
+          });
           return;
         }
         case 'PS_WRITE_DOCUMENT': {
@@ -269,8 +291,34 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
         }
         case 'PS_FLUSH_SYNC': {
           const synced = await flushSyncQueue(true);
+          const wikiSynced = await flushWikiQueue(true);
           const queue = await autoSyncStatus();
-          sendResponse({ ok: true, synced, ...queue });
+          const wikiQueue = await wikiQueueStatus();
+          sendResponse({
+            ok: true,
+            synced,
+            wikiSynced,
+            ...queue,
+            wikiPending: wikiQueue.pending,
+            wikiError: wikiQueue.error,
+          });
+          return;
+        }
+        case 'PS_PUBLISH_WIKI': {
+          const result: WikiPublishMessageResponse = await publishWikiNow();
+          if (result.ok) await clearWikiQueue();
+          sendResponse(result);
+          return;
+        }
+        case 'PS_REQUEST_WIKI_PUBLISH': {
+          const response = await requestWikiPublish();
+          sendResponse(response);
+          return;
+        }
+        case 'PS_GET_WIKI_STATE': {
+          const state = await getWikiPublishState();
+          const response: WikiStateResponse = { ok: true, state };
+          sendResponse(response);
           return;
         }
         case 'PS_GET_RECORD': {

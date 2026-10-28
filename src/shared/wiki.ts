@@ -12,6 +12,7 @@ export interface WikiPage {
   tags: string[];
   concepts: KeyConcept[];
   sections: SummarySection[];
+  notes: string;
   recordId?: string;
   sourceUrl?: string;
   outbound: string[];
@@ -53,6 +54,10 @@ export function recordWikiPageId(recordId: string): string {
 
 function topicPageId(kind: 'tag' | 'concept', key: string): string {
   return `${kind}:${slugify(key)}-${hashString(key).slice(0, 6)}`;
+}
+
+export function wikiTopicPageId(kind: 'tag' | 'concept', value: string): string {
+  return topicPageId(kind, topicKey(value));
 }
 
 function fallbackOverview(record: StudyRecord): string {
@@ -102,6 +107,7 @@ export function buildWiki(records: StudyRecord[]): WikiIndex {
           tags: [tag],
           concepts: [],
           sections: [],
+          notes: '',
           outbound: [noteId],
           backlinks: [],
           recordCount: 1,
@@ -132,6 +138,7 @@ export function buildWiki(records: StudyRecord[]): WikiIndex {
           tags: [],
           concepts: [concept],
           sections: [],
+          notes: '',
           outbound: [noteId],
           backlinks: [],
           recordCount: 1,
@@ -149,6 +156,7 @@ export function buildWiki(records: StudyRecord[]): WikiIndex {
       tags,
       concepts,
       sections: record.summary?.sections ?? [],
+      notes: record.notes.trim(),
       recordId: record.id,
       sourceUrl: record.page.url,
       outbound: unique(outbound),

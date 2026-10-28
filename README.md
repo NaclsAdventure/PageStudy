@@ -8,8 +8,9 @@ PageStudy 是一个 Chrome / Edge 的 MV3 浏览器扩展，用来把网页阅�
 4. 按大纲逐节生成结构化总结，形成可折叠的学习大纲树。
 5. 把记录写入**飞书文档、Notion 页面或本地 Markdown**（Obsidian / Logseq）。
 6. 每次保存自动派生**本地 Wiki**：记录页、标签页、概念页互相建立反链。
-7. 保存后自动同步文档；失败任务进入持久队列，退避重试并在扩展启动时补传。
-8. 对 `chrome://`、`edge://`、扩展管理等浏览器内置页，提供手动摘录模式。
+7. 把本地 Wiki 发布到**飞书个人文档库**，形成私有 PageStudy Wiki；保存后可按需自动覆盖更新。
+8. 保存后自动同步文档；失败任务进入持久队列，退避重试并在扩展启动时补传。
+9. 对 `chrome://`、`edge://`、扩展管理等浏览器内置页，提供手动摘录模式。
 
 技术栈：**React 18 + TypeScript + Vite**，数据本地优先。
 
@@ -163,14 +164,17 @@ PageStudy 的处理方式：
 - 支持按全部/记录/标签/概念过滤，支持搜索标题、标签和概念。
 - Wiki 完全从 IndexedDB 中的最新记录即时派生，不需要额外模型调用、额外上传或手工“转化”步骤。
 - 主题页可以查看相关记录，记录页可以跳回记录库继续编辑。
+- 可以在 Wiki 页点击“发布到飞书文档库”，把整套 Wiki 同步到飞书个人文档库；详见下文“飞书 Wiki 发布”。
 
-当前 Wiki 只保存在本机浏览器；它不会自动发布到外部知识库。
+本地 Wiki 始终从 IndexedDB 即时派生；飞书 Wiki 是它的云端镜像，不是数据源。
 
 ### 数据存储
 
 - 设置与 API Key：`chrome.storage.local`，键名 `pagestudy.settings.v1`。
 - 学习记录：IndexedDB `pagestudy` / `records`，索引包括更新时间、URL、状态。
 - 自动同步队列：`chrome.storage.local`，键名 `pagestudy.sync.queue.v1`。
+- 飞书 Wiki 页面映射：`chrome.storage.local`，键名 `pagestudy.wiki.feishu.v1`。
+- 飞书 Wiki 自动更新队列：`chrome.storage.local`，键名 `pagestudy.wiki.queue.v1`。
 - 不包含云同步、统计或遥测。
 - 设置页“数据与记录”可以导出/导入 JSON，或清空本地记录。
 
@@ -184,7 +188,7 @@ PageStudy 的处理方式：
 
 ```text
 扩展后台 → 本地 Node 桥接（127.0.0.1:17373）
-          ├─ 已登录的 lark-cli → 飞书
+          ├─ 已登录的 lark-cli → 飞书文档 + 飞书个人文档库 Wiki
           ├─ Notion REST API → Notion 页面
           └─ 本地 .md 文件 → Obsidian / Logseq
 ```
@@ -244,6 +248,9 @@ lark-cli auth status
 - `docx:document:create`
 - `docx:document:write_only`
 - `docx:document:readonly`（检查/回查时）
+- `wiki:wiki`、`wiki:wiki:readonly`、`wiki:space:read`
+- `wiki:node:create`、`wiki:node:retrieve`、`wiki:node:read`
+- `drive:drive.metadata:readonly`（更新标题/链接元数据时）
 
 设置页 →“桥接与飞书”：
 
@@ -252,6 +259,29 @@ lark-cli auth status
 - 父文件夹 / 知识库节点 Token：可选；填写后新文档会创建到该位置。
 
 首次写入会创建新文档，并把返回的 URL 保存到记录里；已有文档时可以追加或新建一份。
+
+### 飞书 Wiki 发布
+
+“本地 Wiki”页面可以把整套 Wiki 发布到飞书**个人文档库**（`my_library`），云端结构为：
+
+```text
+我的文档库
+└─ PageStudy Wiki
+   ├─ 学习记录
+   ├─ 标签主题
+   └─ 概念主题
+```
+
+- 每个本地 Wiki 页面（记录页、标签页、概念页）对应一个飞书 docx 节点。
+- 首次发布会创建根节点、三个分类节点和所有页面；映射 token 保存在 `pagestudy.wiki.feishu.v1`。
+- 再次发布按内容哈希只覆盖有变化的文档，不重复创建节点；页面正文使用整篇覆盖更新。内容写入成功后才记录哈希，失败重试会真正补写，不会误判为“已是最新”。
+- 本地记录或主题减少后，发布状态会裁剪掉不再出现的页面映射；云端旧页面不会自动删除，避免误删手工内容。
+- 页面里的内部链接会在节点创建完成后替换成真实的飞书 Wiki URL，分类页和首页可互相跳转。
+- 发布是**私有**行为：桥接只在当前用户的个人文档库内创建/更新节点，不添加协作者、不开启公开分享、不修改文档库可见性。
+- 本地删除记录不会自动删除云端页面；需要时请在飞书手动清理。
+- 如果本地映射丢失但云端已有同名 `PageStudy Wiki`，可以设置桥接环境变量 `FEISHU_WEB_ORIGIN`（例如 `https://your-tenant.feishu.cn`）后按标题复用根节点和分类；正常首次发布不需要该变量。
+
+发布入口：记录库 → 本地 Wiki → “发布到飞书文档库”。
 
 ### Notion
 
@@ -278,8 +308,10 @@ lark-cli auth status
 - 失败按 15 秒、30 秒、1 分钟……递增退避，最长 30 分钟；刷新页面或扩展启动时继续补传。
 - 侧栏/记录库的手动写入会移除同记录同目标的待处理任务，避免重复创建。
 - 设置页可以点击“立即处理同步队列”。
+- “保存后自动更新飞书 Wiki”是独立开关：启用后，保存记录或编辑笔记/标签会延迟约 8 秒重建 Wiki 并发布；失败按 15 秒、30 秒……退避，浏览器启动时补传。
+- Wiki 自动更新只处理有变化的页面（内容哈希相同的页面跳过），不会重复创建飞书节点。
 
-**边界说明**：Manifest V3 不能保证在关闭浏览器的瞬间完成异步网络请求。PageStudy 使用“保存后立即同步 + 持久队列 + 启动补偿 + `onSuspend` 尽力冲刷”，而不是承诺关闭时一定上传成功。看到记录中的“已自动同步”才代表文档写入成功。
+**边界说明**：Manifest V3 不能保证在关闭浏览器的瞬间完成异步网络请求。PageStudy 使用“保存后立即同步 + 持久队列 + 启动补偿 + `onSuspend` 尽力冲刷”，而不是承诺关闭时一定上传成功。看到记录中的“已自动同步”或 Wiki 页面显示“已发布”才代表云端写入成功。
 
 ---
 
@@ -305,25 +337,28 @@ npm run typecheck  # TypeScript 严格检查
 npm test           # Vitest
 npm run build      # 页面 + content script + background
 npm run verify:bridge  # 用假 Notion API 验证桥接创建/追加、Markdown 写入和路径拦截
+npm run verify:wiki    # 用假 lark-cli 验证 Wiki 创建、复用、幂等更新、失败重试与链接替换
 ```
 
 项目结构：
 
 ```text
 src/
-  background/      Service Worker：消息路由、模型调用、总结、文档写入、自动同步队列
+  background/      Service Worker：消息路由、模型调用、总结、文档写入、文档与 Wiki 自动同步队列
   content/         内容脚本：正文/大纲/选区提取、悬浮按钮
-  dashboard/       记录库 + 本地 Wiki
+  dashboard/       记录库 + 本地 Wiki + 飞书 Wiki 发布
   options/         设置页面：模型、文档与同步、桥接、Skills、数据
-  shared/          类型、常量、设置、IndexedDB、Markdown、文档引用、Wiki、Skill 提示词
+  shared/          类型、常量、设置、IndexedDB、Markdown、文档引用、Wiki、Wiki 发布、Skill 提示词
   sidepanel/       侧栏 React 应用与大纲树
 bridge/
   lark-bridge.mjs      本地桥接 HTTP 服务
+  feishu-wiki.mjs      飞书个人文档库 Wiki 创建/复用/覆盖更新
   notion.mjs           Notion API 与 Markdown → block 转换
   markdown-store.mjs   Obsidian/Logseq 本地文件写入
   start-bridge.cmd
 scripts/
   verify-bridge.mjs    桥接端到端验证（假 Notion）
+  verify-wiki.mjs      飞书 Wiki 发布器验证（假 lark-cli）
 public/
   manifest.json
   icons/
@@ -346,6 +381,9 @@ public/
 - 浏览器内置页不能读取正文，只能手动摘录；扩展不会、也不能绕过浏览器限制。
 - 网页改版后，旧记录的锚点可能失效，但大纲、总结和笔记仍保存在本地。
 - Notion MVP 只支持写入父页面，不直接支持 database 属性。
+- 飞书 Wiki 发布到当前用户的个人文档库（`my_library`），不会选择团队知识空间；云端文档权限跟随个人文档库，扩展不会主动改为公开。
+- 飞书 Wiki 的页面身份依赖本地映射；清空浏览器数据后，若云端已有同名根节点，需要 `FEISHU_WEB_ORIGIN` 才能按标题复用，否则会新建一套根节点。
+- 本地删除记录不会自动删除飞书 Wiki 页面，避免误删用户手工整理的内容。
 - 本地 Markdown 写入依赖本机桥接；扩展本身没有文件系统权限。
 - 自动同步不保证浏览器关闭瞬间完成，详见上文“自动同步与关闭浏览器”。
 - 目前没有账号体系、云同步和多人协作。
@@ -398,6 +436,14 @@ Invoke-WebRequest http://127.0.0.1:17373/health -UseBasicParsing
 - 在设置页点击“立即处理同步队列”查看错误。
 - 检查桥接是否运行、目标 Token 是否有效。
 - 自动同步队列是持久的；修复配置后重试会继续处理。
+
+**飞书 Wiki 发布失败**
+
+- 确认 `lark-cli auth status` 已登录，且 scope 包含 `wiki:wiki`、`wiki:space:read`、`wiki:node:create`、`wiki:node:retrieve`。
+- 确认桥接版本是当前版本；`/health` 应返回 `wiki: true`。
+- 如果提示“无法解析飞书个人文档库”，先在飞书网页端打开一次“我的文档库”，确认当前账号可见。
+- 发布是覆盖更新：不要手工把 PageStudy 生成的 Wiki 文档改造成其他用途，否则下一次发布会被整篇替换。
+- 如果本地映射丢失，优先在扩展设置中导出数据备份；需要复用旧根节点时设置 `FEISHU_WEB_ORIGIN`，否则发布会新建根节点。
 
 ---
 

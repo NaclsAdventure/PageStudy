@@ -996,6 +996,36 @@ a {
   font-size: 10px;
 }
 
+.wiki-publish-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--teal-soft);
+}
+
+.wiki-publish-row .primary-action,
+.wiki-publish-row .secondary-action {
+  padding: 5px 8px;
+  font-size: 10px;
+}
+
+.wiki-publish-status {
+  flex: 1 0 100%;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.wiki-publish-status.bad {
+  color: var(--danger);
+}
+
 .wiki-kind-badge {
   flex: 0 0 auto;
   align-self: flex-start;

@@ -9,15 +9,27 @@
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { spawn, execFileSync } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { appendNotionPage, createNotionPage, notionStatus } from './notion.mjs';
 import { appendMarkdownNote, createMarkdownNote, markdownStatus } from './markdown-store.mjs';
+import { publishWiki } from './feishu-wiki.mjs';
 
 const HOST = process.env.PAGE_STUDY_BRIDGE_HOST || '127.0.0.1';
 const PORT = Number(process.env.PAGE_STUDY_BRIDGE_PORT || 17373);
 const TOKEN = process.env.PAGE_STUDY_BRIDGE_TOKEN || '';
 const LARK_CLI = process.env.LARK_CLI || (process.platform === 'win32' ? 'lark-cli.cmd' : 'lark-cli');
+const FEISHU_WEB_ORIGIN = (() => {
+  const raw = (process.env.FEISHU_WEB_ORIGIN || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : '';
+  } catch {
+    return '';
+  }
+})();
 const MAX_BODY = 8 * 1024 * 1024;
 
 function sendJson(res, status, payload, extraHeaders = {}) {
@@ -107,14 +119,56 @@ function parseJsonObject(text) {
   }
 }
 
+let larkLauncherCache = null;
+
+/**
+ * Windows 的 npm 全局命令是 .cmd，直接 execFile 会报 EINVAL；同时用 shell:true
+ * 拼接标题会有命令注入风险。优先找到 lark-cli 的 Node 入口直接执行；
+ * 找不到 Node 入口时不启用 shell，让错误明确暴露而不是冒险拼接参数。
+ */
+function resolveLarkLauncher() {
+  if (larkLauncherCache) return larkLauncherCache;
+  let cli = LARK_CLI;
+  if (process.platform === 'win32' && !path.isAbsolute(cli)) {
+    try {
+      const found = execFileSync('where.exe', [cli], {
+        encoding: 'utf8',
+        windowsHide: true,
+      })
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find(Boolean);
+      if (found) cli = found;
+    } catch {
+      // 保持原值，让 spawn 给出可诊断的启动错误。
+    }
+  }
+  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(cli)) {
+    const nodeEntry = path.join(
+      path.dirname(cli),
+      'node_modules',
+      '@larksuite',
+      'cli',
+      'scripts',
+      'run.js',
+    );
+    if (existsSync(nodeEntry)) {
+      larkLauncherCache = { command: process.execPath, prefix: [nodeEntry], shell: false };
+      return larkLauncherCache;
+    }
+    larkLauncherCache = { command: cli, prefix: [], shell: false };
+    return larkLauncherCache;
+  }
+  larkLauncherCache = { command: cli, prefix: [], shell: false };
+  return larkLauncherCache;
+}
+
 function runLark(args, cwd) {
   return new Promise((resolve, reject) => {
-    // Windows 的 npm 全局命令是 .cmd，直接 execFile 会报 EINVAL；
-    // 这里交给 cmd.exe 解析，所有可变参数在进入本函数前都已做格式校验。
-    const useShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(LARK_CLI);
-    const child = spawn(LARK_CLI, args, {
+    const launcher = resolveLarkLauncher();
+    const child = spawn(launcher.command, [...launcher.prefix, ...args], {
       cwd,
-      shell: useShell,
+      shell: launcher.shell,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -298,6 +352,7 @@ const server = http.createServer(async (req, res) => {
         {
           ok: true,
           larkCli: version.ok,
+          wiki: true,
           notion: notion.enabled,
           markdown: markdown.enabled,
           markdownDir: markdown.markdownDir,
@@ -327,6 +382,18 @@ const server = http.createServer(async (req, res) => {
         documentId: decodeURIComponent(appendMatch[1]),
         markdown: body.markdown,
       });
+      sendJson(res, 200, result, headers);
+      return;
+    }
+
+    if (req.method === 'POST' && requestUrl.pathname === '/api/feishu/wiki/publish') {
+      const body = await readJsonBody(req);
+      const result = await publishWiki({
+        runLark,
+        payload: body,
+        webOrigin: FEISHU_WEB_ORIGIN,
+      });
+      // 发布失败时也返回 200 和部分 state，扩展可以保存已创建节点的映射后重试。
       sendJson(res, 200, result, headers);
       return;
     }
@@ -385,6 +452,7 @@ server.listen(PORT, HOST, () => {
   const markdown = markdownStatus();
   console.log(`PageStudy 文档桥接已启动：http://${HOST}:${PORT}`);
   console.log(`飞书 CLI：${LARK_CLI}`);
+  console.log('飞书 Wiki：个人文档库（my_library）');
   console.log(`Notion：${notion.enabled ? '已配置 Token' : '未配置 NOTION_TOKEN'}`);
   console.log(`本地 Markdown：${markdown.enabled ? markdown.markdownDir : '未配置 PAGESTUDY_MARKDOWN_DIR'}`);
   if (TOKEN) console.log('已启用 x-pagestudy-token 校验。');

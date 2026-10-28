@@ -1,10 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { BridgeHealth, DocumentTarget, StudyRecord } from '../shared/types';
+import type {
+  BridgeHealth,
+  DocumentTarget,
+  FeishuWikiState,
+  StudyRecord,
+} from '../shared/types';
 import { deleteRecord, listRecords, saveRecord } from '../shared/db';
 import { asErrorMessage, formatDate, safeHostname } from '../shared/utils';
 import { flattenOutline } from '../shared/skills';
 import { recordToMarkdown } from '../shared/markdown';
-import type { BridgeHealthResponse } from '../shared/messages';
+import type {
+  BridgeHealthResponse,
+  WikiPublishMessageResponse,
+  WikiStateResponse,
+} from '../shared/messages';
 import { sendRuntimeMessage } from '../shared/messages';
 import {
   DOCUMENT_TARGETS,
@@ -35,6 +44,8 @@ export default function DashboardApp() {
   const [docTarget, setDocTarget] = useState<DocumentTarget>('feishu');
   const [bridgeHealth, setBridgeHealth] = useState<BridgeHealth | null>(null);
   const [tagInput, setTagInput] = useState('');
+  const [wikiState, setWikiState] = useState<FeishuWikiState | null>(null);
+  const [wikiPublishing, setWikiPublishing] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>(
     window.location.hash === '#wiki' ? 'wiki' : 'library',
   );
@@ -45,6 +56,13 @@ export default function DashboardApp() {
   useEffect(() => {
     void refresh();
     void loadSettings().then((settings) => setDocTarget(settings.documents.defaultTarget));
+    void sendRuntimeMessage<WikiStateResponse>({ type: 'PS_GET_WIKI_STATE' })
+      .then((response) => {
+        if (response.ok) setWikiState(response.state ?? null);
+      })
+      .catch(() => {
+        // 发布状态读取失败不影响本地 Wiki 浏览。
+      });
     const onHashChange = () => setViewMode(window.location.hash === '#wiki' ? 'wiki' : 'library');
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
@@ -138,6 +156,10 @@ export default function DashboardApp() {
     const next: StudyRecord = { ...selected, ...patch, updatedAt: Date.now() };
     setRecords((current) => current.map((record) => (record.id === next.id ? next : record)));
     await saveRecord(next);
+    // 后台会根据“保存后自动更新 Wiki”设置决定是否入队；这里不阻塞编辑。
+    void sendRuntimeMessage({ type: 'PS_REQUEST_WIKI_PUBLISH' }).catch(() => {
+      // 自动 Wiki 发布失败不影响本地保存。
+    });
   };
 
   const openSource = () => {
@@ -182,6 +204,7 @@ export default function DashboardApp() {
       const health: BridgeHealth = {
         ok: Boolean(response.ok),
         larkCli: Boolean(response.larkCli),
+        wiki: Boolean(response.wiki),
         notion: Boolean(response.notion),
         markdown: Boolean(response.markdown),
         markdownDir: response.markdownDir,
@@ -196,12 +219,44 @@ export default function DashboardApp() {
       const health: BridgeHealth = {
         ok: false,
         larkCli: false,
+        wiki: false,
         notion: false,
         markdown: false,
         error: asErrorMessage(error),
       };
       setBridgeHealth(health);
       return health;
+    }
+  };
+
+  const publishWikiToFeishu = async () => {
+    if (wiki.pages.length === 0) {
+      flash('本地 Wiki 还没有页面，先保存一条学习记录。', true);
+      return;
+    }
+    setWikiPublishing(true);
+    try {
+      const health = await checkBridge();
+      if (!health.ok) throw new Error(health.error ?? '本地桥接服务未运行，请先运行 npm run bridge。');
+      if (!health.larkCli) throw new Error('飞书 CLI 未就绪，请检查 lark-cli 登录状态。');
+      if (!health.wiki) throw new Error('桥接版本过旧，请重启本地桥接以启用飞书 Wiki 接口。');
+      const response = await sendRuntimeMessage<WikiPublishMessageResponse>({ type: 'PS_PUBLISH_WIKI' });
+      if (!response.ok) throw new Error(response.error ?? '发布飞书 Wiki 失败');
+      setWikiState(response.state ?? null);
+      const created = response.created ?? 0;
+      const updated = response.updated ?? 0;
+      const skipped = response.skipped ?? 0;
+      flash(`已同步到飞书文档库：新建 ${created}，更新 ${updated}，跳过 ${skipped}。`);
+    } catch (error) {
+      flash(asErrorMessage(error), true);
+      try {
+        const stateResponse = await sendRuntimeMessage<WikiStateResponse>({ type: 'PS_GET_WIKI_STATE' });
+        if (stateResponse.ok) setWikiState(stateResponse.state ?? null);
+      } catch {
+        // 读取部分映射失败时保留旧状态，至少把发布错误提示给用户。
+      }
+    } finally {
+      setWikiPublishing(false);
     }
   };
 
@@ -249,6 +304,10 @@ export default function DashboardApp() {
     const next = records.filter((record) => record.id !== selected.id);
     setRecords(next);
     setSelectedId(next[0]?.id ?? null);
+    // 删除会改变 Wiki 的页面清单；后台按设置决定是否入队更新。
+    void sendRuntimeMessage({ type: 'PS_REQUEST_WIKI_PUBLISH' }).catch(() => {
+      // 自动 Wiki 发布失败不影响本地删除。
+    });
     flash('记录已删除。');
   };
 
@@ -321,6 +380,9 @@ export default function DashboardApp() {
           selected={selectedWiki}
           onSelect={setWikiPageId}
           counts={{ notes: wiki.noteCount, tags: wiki.tagCount, concepts: wiki.conceptCount }}
+          publishState={wikiState}
+          publishing={wikiPublishing}
+          onPublish={() => void publishWikiToFeishu()}
           onOpenRecord={(recordId) => {
             setSelectedId(recordId);
             switchView('library');
@@ -658,6 +720,9 @@ interface WikiBrowserProps {
   selected: WikiPage | null;
   onSelect: (id: string) => void;
   counts: { notes: number; tags: number; concepts: number };
+  publishState: FeishuWikiState | null;
+  publishing: boolean;
+  onPublish: () => void;
   onOpenRecord: (recordId: string) => void;
 }
 
@@ -671,6 +736,9 @@ function WikiBrowser({
   selected,
   onSelect,
   counts,
+  publishState,
+  publishing,
+  onPublish,
   onOpenRecord,
 }: WikiBrowserProps) {
   const backlinks = selected
@@ -678,6 +746,8 @@ function WikiBrowser({
     : [];
   const kindLabel = (value: WikiPageKind) =>
     value === 'note' ? '记录' : value === 'tag' ? '标签' : '概念';
+  const publishedPages = publishState ? Object.keys(publishState.pages).length : 0;
+  const totalPages = counts.notes + counts.tags + counts.concepts;
 
   return (
     <div className="wiki-shell">
@@ -719,6 +789,33 @@ function WikiBrowser({
         </div>
         <div className="wiki-counts">
           {counts.notes} 条记录 · {counts.tags} 个标签 · {counts.concepts} 个概念
+        </div>
+        <div className="wiki-publish-row">
+          <button
+            type="button"
+            className="primary-action"
+            onClick={onPublish}
+            disabled={publishing || totalPages === 0}
+          >
+            {publishing ? '发布中…' : '发布到飞书文档库'}
+          </button>
+          {publishState?.root.url ? (
+            <a
+              className="secondary-action"
+              href={publishState.root.url}
+              target="_blank"
+              rel="noreferrer"
+            >
+              打开飞书 Wiki
+            </a>
+          ) : null}
+          <span className={publishState?.lastError ? 'wiki-publish-status bad' : 'wiki-publish-status'}>
+            {publishState?.lastError
+              ? `上次发布失败：${publishState.lastError}`
+              : publishState
+                ? `已发布 ${publishedPages} 页${publishState.lastPublishedAt ? ` · ${formatDate(publishState.lastPublishedAt)}` : ''}`
+                : '尚未发布到飞书'}
+          </span>
         </div>
         <div className="record-list">
           {pages.length === 0 ? (

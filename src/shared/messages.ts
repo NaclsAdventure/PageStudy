@@ -5,6 +5,7 @@ import type {
   DocumentTarget,
   DocumentWriteResult,
   FeishuWriteResult,
+  FeishuWikiState,
   ModelOption,
   PageContext,
   PageSummary,
@@ -12,6 +13,7 @@ import type {
   Settings,
   StudyRecord,
   SummaryRequest,
+  WikiPublishResponse,
 } from './types';
 
 export type RuntimeMessage =
@@ -29,6 +31,9 @@ export type RuntimeMessage =
   | { type: 'PS_APPEND_FEISHU'; documentId: string; markdown: string }
   | { type: 'PS_ENQUEUE_SYNC'; recordId: string; target?: DocumentTarget }
   | { type: 'PS_FLUSH_SYNC' }
+  | { type: 'PS_PUBLISH_WIKI' }
+  | { type: 'PS_REQUEST_WIKI_PUBLISH' }
+  | { type: 'PS_GET_WIKI_STATE' }
   | { type: 'PS_GET_RECORD'; recordId: string }
   | { type: 'PS_OPEN_PANEL' }
   | { type: 'PS_SELECTION_CHANGED'; selection: SelectionContext | null; tabId?: number };
@@ -85,6 +90,20 @@ export interface SyncEnqueueResponse {
   ok: boolean;
   queued?: boolean;
   target?: DocumentTarget;
+  error?: string;
+}
+
+export interface WikiPublishMessageResponse extends WikiPublishResponse {}
+
+export interface WikiStateResponse {
+  ok: boolean;
+  state?: FeishuWikiState | null;
+  error?: string;
+}
+
+export interface WikiQueueResponse {
+  ok: boolean;
+  queued?: boolean;
   error?: string;
 }
 

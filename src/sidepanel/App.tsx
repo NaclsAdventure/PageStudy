@@ -163,6 +163,15 @@ export default function App() {
     [settings?.documents.autoSync],
   );
 
+  const queueWikiAutoSync = useCallback(async () => {
+    if (!settings?.documents.wikiAutoSync) return;
+    try {
+      await sendRuntimeMessage({ type: 'PS_REQUEST_WIKI_PUBLISH' });
+    } catch {
+      // 自动 Wiki 发布失败不阻断本地保存。
+    }
+  }, [settings?.documents.wikiAutoSync]);
+
   const patchRecord = useCallback(
     (patch: Partial<StudyRecord>) => {
       const current = recordRef.current;
@@ -174,9 +183,10 @@ export default function App() {
       autoSyncTimerRef.current = window.setTimeout(() => {
         autoSyncTimerRef.current = null;
         void queueAutoSync(next);
+        void queueWikiAutoSync();
       }, 2500);
     },
-    [persistRecord, queueAutoSync],
+    [persistRecord, queueAutoSync, queueWikiAutoSync],
   );
 
   const loadSettings = useCallback(async () => {
@@ -594,6 +604,7 @@ export default function App() {
     await persistRecord(next);
     setSideTab('record');
     void queueAutoSync(next);
+    void queueWikiAutoSync();
     showNotice(isSameContent ? '记录已更新。' : '本页已记录。', 'success');
     return next;
   };
@@ -628,6 +639,7 @@ export default function App() {
       };
       await persistRecord(next);
       void queueAutoSync(next);
+      void queueWikiAutoSync();
       showNotice('总结已保存。', 'success');
     } catch (error) {
       const next: StudyRecord = {

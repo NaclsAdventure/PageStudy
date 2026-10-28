@@ -47,6 +47,7 @@ describe('normalizeSettings', () => {
     const settings = normalizeSettings({
       documents: {
         autoSync: true,
+        wikiAutoSync: true,
         defaultTarget: 'notion',
         notionParentPageId: ' 1234567890abcdef1234567890abcdef ',
         markdownDirectory: ' PageStudy ',
@@ -54,6 +55,7 @@ describe('normalizeSettings', () => {
     });
     expect(settings.documents).toEqual({
       autoSync: true,
+      wikiAutoSync: true,
       defaultTarget: 'notion',
       notionParentPageId: '1234567890abcdef1234567890abcdef',
       markdownDirectory: 'PageStudy',

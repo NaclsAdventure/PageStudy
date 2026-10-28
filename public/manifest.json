@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PageStudy · 阅读学习助手",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "按网页大纲记录博客，选中段落提问，用 Skill 精读，并把学习记录同步到飞书、Notion 或本地知识库。",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "sidePanel", "contextMenus", "alarms", "activeTab"],

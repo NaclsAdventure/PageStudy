@@ -1,10 +1,14 @@
 import type { ProviderId, ProviderConfig, Settings, Skill } from './types';
 
 export const APP_NAME = 'PageStudy';
-export const APP_VERSION = '0.2.0';
+export const APP_VERSION = '0.3.0';
 export const SETTINGS_KEY = 'pagestudy.settings.v1';
 export const SYNC_QUEUE_KEY = 'pagestudy.sync.queue.v1';
 export const SYNC_ALARM = 'pagestudy-sync';
+export const WIKI_STATE_KEY = 'pagestudy.wiki.feishu.v1';
+export const WIKI_QUEUE_KEY = 'pagestudy.wiki.queue.v1';
+export const WIKI_SYNC_ALARM = 'pagestudy-wiki-sync';
+export const WIKI_ROOT_TITLE = 'PageStudy Wiki';
 export const MAX_PAGE_CHARS = 60000;
 export const MAX_SECTION_CHARS = 5000;
 
@@ -175,6 +179,7 @@ export function getDefaultSettings(): Settings {
     },
     documents: {
       autoSync: false,
+      wikiAutoSync: false,
       defaultTarget: 'feishu',
       notionParentPageId: '',
       markdownDirectory: '',

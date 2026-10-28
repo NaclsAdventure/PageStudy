@@ -1,7 +1,7 @@
 {
   "name": "pagestudy",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "bridge": "node bridge/lark-bridge.mjs",
-    "verify:bridge": "node scripts/verify-bridge.mjs"
+    "verify:bridge": "node scripts/verify-bridge.mjs",
+    "verify:wiki": "node scripts/verify-wiki.mjs"
   },
   "dependencies": {
     "idb": "^8.0.0",

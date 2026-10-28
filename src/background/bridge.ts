@@ -9,6 +9,7 @@ interface BridgeHealthPayload {
   error?: string;
   version?: string;
   larkCli?: boolean;
+  wiki?: boolean;
   notion?: boolean;
   markdown?: boolean;
   markdownDir?: string;
@@ -75,6 +76,7 @@ export async function checkBridge(config: BridgeConfig): Promise<BridgeHealth> {
       return {
         ok: false,
         larkCli: Boolean(data.larkCli),
+        wiki: Boolean(data.wiki),
         notion: Boolean(data.notion),
         markdown: Boolean(data.markdown),
         markdownDir: data.markdownDir,
@@ -84,12 +86,13 @@ export async function checkBridge(config: BridgeConfig): Promise<BridgeHealth> {
     return {
       ok: true,
       larkCli: Boolean(data.larkCli),
+      wiki: Boolean(data.wiki),
       notion: Boolean(data.notion),
       markdown: Boolean(data.markdown),
       markdownDir: data.markdownDir,
       version: data.version,
     };
   } catch (error) {
-    return { ok: false, larkCli: false, notion: false, markdown: false, error: asErrorMessage(error) };
+    return { ok: false, larkCli: false, wiki: false, notion: false, markdown: false, error: asErrorMessage(error) };
   }
 }

@@ -67,6 +67,8 @@ function normalizeDocuments(raw: unknown, fallback: DocumentSettings): DocumentS
   const target = asString(raw.defaultTarget);
   return {
     autoSync: typeof raw.autoSync === 'boolean' ? raw.autoSync : fallback.autoSync,
+    wikiAutoSync:
+      typeof raw.wikiAutoSync === 'boolean' ? raw.wikiAutoSync : fallback.wikiAutoSync,
     defaultTarget: DOCUMENT_TARGETS.includes(target as DocumentTarget)
       ? (target as DocumentTarget)
       : fallback.defaultTarget,

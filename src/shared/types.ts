@@ -21,6 +21,7 @@ export type DocumentTarget = 'feishu' | 'notion' | 'markdown';
 
 export interface DocumentSettings {
   autoSync: boolean;
+  wikiAutoSync: boolean;
   defaultTarget: DocumentTarget;
   notionParentPageId: string;
   markdownDirectory: string;
@@ -40,6 +41,74 @@ export interface DocumentSyncState {
   lastError?: string;
   nextAttemptAt?: number;
   updatedAt: number;
+}
+
+export type WikiCategoryKey = 'records' | 'tags' | 'concepts';
+
+export interface WikiNodeRef {
+  nodeToken: string;
+  objToken: string;
+  url: string;
+}
+
+export interface WikiCategoryRef extends WikiNodeRef {
+  title: string;
+  hash: string;
+}
+
+export interface WikiPageRef extends WikiNodeRef {
+  pageId: string;
+  title: string;
+  kind: 'note' | 'tag' | 'concept';
+  hash: string;
+}
+
+/** 飞书个人文档库中的 PageStudy Wiki 映射；只保存 token 和哈希，不保存正文。 */
+export interface FeishuWikiState {
+  schemaVersion: 1;
+  target: 'feishu';
+  spaceId: string;
+  root: WikiCategoryRef;
+  categories: Partial<Record<WikiCategoryKey, WikiCategoryRef>>;
+  pages: Record<string, WikiPageRef>;
+  lastPublishedAt?: number;
+  lastError?: string;
+}
+
+export interface WikiPublishCategory {
+  key: WikiCategoryKey;
+  title: string;
+  markdown: string;
+  hash: string;
+}
+
+export interface WikiPublishPage {
+  id: string;
+  kind: 'note' | 'tag' | 'concept';
+  category: WikiCategoryKey;
+  title: string;
+  markdown: string;
+  hash: string;
+}
+
+export interface WikiPublishRequest {
+  root: {
+    title: string;
+    markdown: string;
+    hash: string;
+  };
+  categories: WikiPublishCategory[];
+  pages: WikiPublishPage[];
+  state: FeishuWikiState | null;
+}
+
+export interface WikiPublishResponse {
+  ok: boolean;
+  state?: FeishuWikiState;
+  created?: number;
+  updated?: number;
+  skipped?: number;
+  error?: string;
 }
 
 export interface Skill {
@@ -185,12 +254,15 @@ export interface ModelOption {
 export interface BridgeHealth {
   ok: boolean;
   larkCli: boolean;
+  wiki?: boolean;
   notion?: boolean;
   markdown?: boolean;
   markdownDir?: string;
   version?: string;
   syncPending?: number;
   syncError?: number;
+  wikiPending?: number;
+  wikiError?: number;
   error?: string;
 }
 
