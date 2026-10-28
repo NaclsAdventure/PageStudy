@@ -3,10 +3,13 @@ import type {
   BridgeHealthResponse,
   ChatPortEvent,
   ChatPortRequest,
+  DocumentWriteResponse,
   FeishuWriteResponse,
   ModelsResponse,
+  RecordResponse,
   RuntimeMessage,
   SummarizeResponse,
+  SyncEnqueueResponse,
   TestProviderResponse,
 } from '../shared/messages';
 import {
@@ -20,7 +23,16 @@ import { buildChatSystemPrompt, getAllSkills, getSkillById } from '../shared/ski
 import { asErrorMessage } from '../shared/utils';
 import { fetchModels, requestChat, testProvider } from './providers';
 import { generateSummary } from './summary';
-import { appendFeishuDocument, checkBridge, writeFeishuDocument } from './feishu';
+import { checkBridge } from './bridge';
+import { appendDocument, writeDocument } from './documents';
+import {
+  autoSyncStatus,
+  enqueueRecordSync,
+  flushSyncQueue,
+  removeRecordSyncJob,
+} from './sync';
+import { getRecord } from '../shared/db';
+import { isDocumentTarget } from '../shared/documents';
 
 // API Key 只允许扩展页面（侧栏、设置、记录库）读取，内容脚本不应接触。
 if (chrome.storage.local.setAccessLevel) {
@@ -70,11 +82,25 @@ async function openPanel(tabId?: number): Promise<boolean> {
 chrome.runtime.onInstalled.addListener(() => {
   void setupSidePanel();
   void setupContextMenu();
+  void flushSyncQueue();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   void setupSidePanel();
+  // MV3 的 service worker 不能保证在浏览器关闭时完成网络请求；启动时补传上次待同步队列。
+  void flushSyncQueue();
 });
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'pagestudy-sync') void flushSyncQueue();
+});
+
+if (chrome.runtime.onSuspend) {
+  chrome.runtime.onSuspend.addListener(() => {
+    // 浏览器关闭/worker 挂起前的 best-effort 冲刷；真正的可靠性来自保存后立即同步和启动补传。
+    void flushSyncQueue(true);
+  });
+}
 
 if (chrome.action?.onClicked) {
   chrome.action.onClicked.addListener((tab) => {
@@ -151,25 +177,107 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
         case 'PS_BRIDGE_HEALTH': {
           const settings = await loadSettings();
           const health: BridgeHealthResponse = await checkBridge(settings.feishu);
-          sendResponse({ ...health });
+          const queue = await autoSyncStatus();
+          sendResponse({ ...health, syncPending: queue.pending, syncError: queue.error });
+          return;
+        }
+        case 'PS_WRITE_DOCUMENT': {
+          if (!isDocumentTarget(message.target)) {
+            sendResponse({ ok: false, target: message.target, error: '不支持的文档目标。' });
+            return;
+          }
+          const settings = await loadSettings();
+          const response: DocumentWriteResponse = await writeDocument(
+            { bridge: settings.feishu, documents: settings.documents },
+            { target: message.target, title: message.title, markdown: message.markdown },
+          );
+          if (message.recordId) {
+            try {
+              await removeRecordSyncJob(message.recordId, message.target);
+            } catch {
+              // 文档已经写入成功；队列清理失败不应把成功结果改成失败。
+            }
+          }
+          sendResponse(response);
+          return;
+        }
+        case 'PS_APPEND_DOCUMENT': {
+          if (!isDocumentTarget(message.target)) {
+            sendResponse({ ok: false, target: message.target, error: '不支持的文档目标。' });
+            return;
+          }
+          const settings = await loadSettings();
+          const response: DocumentWriteResponse = await appendDocument(
+            { bridge: settings.feishu, documents: settings.documents },
+            {
+              target: message.target,
+              documentId: message.documentId,
+              markdown: message.markdown,
+            },
+          );
+          if (message.recordId) {
+            try {
+              await removeRecordSyncJob(message.recordId, message.target);
+            } catch {
+              // 文档已经写入成功；队列清理失败不应把成功结果改成失败。
+            }
+          }
+          sendResponse(response);
           return;
         }
         case 'PS_WRITE_FEISHU': {
           const settings = await loadSettings();
-          const response: FeishuWriteResponse = await writeFeishuDocument(settings.feishu, {
-            title: message.title,
-            markdown: message.markdown,
-            parentToken: message.parentToken,
-          });
-          sendResponse(response);
+          const response = await writeDocument(
+            { bridge: settings.feishu, documents: settings.documents },
+            { target: 'feishu', title: message.title, markdown: message.markdown },
+          );
+          const legacy: FeishuWriteResponse = {
+            ok: response.ok,
+            documentId: response.documentId,
+            url: response.url,
+            error: response.error,
+          };
+          sendResponse(legacy);
           return;
         }
         case 'PS_APPEND_FEISHU': {
           const settings = await loadSettings();
-          const response: FeishuWriteResponse = await appendFeishuDocument(settings.feishu, {
-            documentId: message.documentId,
-            markdown: message.markdown,
-          });
+          const response = await appendDocument(
+            { bridge: settings.feishu, documents: settings.documents },
+            { target: 'feishu', documentId: message.documentId, markdown: message.markdown },
+          );
+          const legacy: FeishuWriteResponse = {
+            ok: response.ok,
+            documentId: response.documentId,
+            url: response.url,
+            error: response.error,
+          };
+          sendResponse(legacy);
+          return;
+        }
+        case 'PS_ENQUEUE_SYNC': {
+          if (message.target !== undefined && !isDocumentTarget(message.target)) {
+            sendResponse({ ok: false, error: '不支持的文档目标。' });
+            return;
+          }
+          const response: SyncEnqueueResponse = await enqueueRecordSync(
+            message.recordId,
+            message.target,
+          );
+          sendResponse(response);
+          return;
+        }
+        case 'PS_FLUSH_SYNC': {
+          const synced = await flushSyncQueue(true);
+          const queue = await autoSyncStatus();
+          sendResponse({ ok: true, synced, ...queue });
+          return;
+        }
+        case 'PS_GET_RECORD': {
+          const record = await getRecord(message.recordId);
+          const response: RecordResponse = record
+            ? { ok: true, record }
+            : { ok: false, error: '记录不存在。' };
           sendResponse(response);
           return;
         }

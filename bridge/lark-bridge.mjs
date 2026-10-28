@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 /**
- * PageStudy 飞书桥接服务
+ * PageStudy 本地文档桥接服务
  *
- * 浏览器扩展运行在沙箱中，不能直接调用宿主机器的 MCP / lark-cli。
- * 这个服务只监听 127.0.0.1，复用当前用户已经登录的 lark-cli 创建飞书文档。
- * 不保存飞书 App Secret，也不允许任意命令执行。
+ * 浏览器扩展运行在沙箱中，不能直接调用宿主机器的 MCP / lark-cli，也不能任意写文件。
+ * 这个服务只监听 127.0.0.1，负责飞书（lark-cli）、Notion API 和本地 Markdown 三种目标。
+ * Token 只从进程环境变量读取，不返回给浏览器，也不允许任意命令执行。
  */
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendNotionPage, createNotionPage, notionStatus } from './notion.mjs';
+import { appendMarkdownNote, createMarkdownNote, markdownStatus } from './markdown-store.mjs';
 
 const HOST = process.env.PAGE_STUDY_BRIDGE_HOST || '127.0.0.1';
 const PORT = Number(process.env.PAGE_STUDY_BRIDGE_PORT || 17373);
@@ -31,11 +33,16 @@ function sendJson(res, status, payload, extraHeaders = {}) {
 
 function originAllowed(origin) {
   if (!origin) return true;
-  return (
-    origin.startsWith('chrome-extension://') ||
-    origin.startsWith('http://127.0.0.1') ||
-    origin.startsWith('http://localhost')
-  );
+  if (origin.startsWith('chrome-extension://')) return true;
+  try {
+    const url = new URL(origin);
+    return (
+      url.protocol === 'http:' &&
+      (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]')
+    );
+  } catch {
+    return false;
+  }
 }
 
 function corsHeaders(req) {
@@ -72,6 +79,15 @@ function readBody(req) {
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
   });
+}
+
+async function readJsonBody(req) {
+  const raw = await readBody(req);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error('请求体必须是 JSON。');
+  }
 }
 
 function parseJsonObject(text) {
@@ -274,12 +290,17 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && requestUrl.pathname === '/health') {
       const version = await getLarkVersion();
+      const notion = notionStatus();
+      const markdown = markdownStatus();
       sendJson(
         res,
         200,
         {
           ok: true,
           larkCli: version.ok,
+          notion: notion.enabled,
+          markdown: markdown.enabled,
+          markdownDir: markdown.markdownDir,
           version: version.version,
           error: version.error,
         },
@@ -289,13 +310,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && requestUrl.pathname === '/api/feishu/docs') {
-      const raw = await readBody(req);
-      let body;
-      try {
-        body = JSON.parse(raw);
-      } catch {
-        throw new Error('请求体必须是 JSON。');
-      }
+      const body = await readJsonBody(req);
       const result = await createDoc({
         title: body.title,
         markdown: body.markdown,
@@ -307,15 +322,52 @@ const server = http.createServer(async (req, res) => {
 
     const appendMatch = requestUrl.pathname.match(/^\/api\/feishu\/docs\/([^/]+)\/append$/);
     if (req.method === 'POST' && appendMatch) {
-      const raw = await readBody(req);
-      let body;
-      try {
-        body = JSON.parse(raw);
-      } catch {
-        throw new Error('请求体必须是 JSON。');
-      }
+      const body = await readJsonBody(req);
       const result = await appendDoc({
         documentId: decodeURIComponent(appendMatch[1]),
+        markdown: body.markdown,
+      });
+      sendJson(res, 200, result, headers);
+      return;
+    }
+
+    if (req.method === 'POST' && requestUrl.pathname === '/api/notion/pages') {
+      const body = await readJsonBody(req);
+      const result = await createNotionPage({
+        title: body.title,
+        markdown: body.markdown,
+        parentPageId: body.parentPageId,
+      });
+      sendJson(res, 200, result, headers);
+      return;
+    }
+
+    const notionAppendMatch = requestUrl.pathname.match(/^\/api\/notion\/pages\/([^/]+)\/append$/);
+    if (req.method === 'POST' && notionAppendMatch) {
+      const body = await readJsonBody(req);
+      const result = await appendNotionPage({
+        pageId: decodeURIComponent(notionAppendMatch[1]),
+        markdown: body.markdown,
+      });
+      sendJson(res, 200, result, headers);
+      return;
+    }
+
+    if (req.method === 'POST' && requestUrl.pathname === '/api/markdown/notes') {
+      const body = await readJsonBody(req);
+      const result = await createMarkdownNote({
+        title: body.title,
+        markdown: body.markdown,
+        directory: body.directory,
+      });
+      sendJson(res, 200, result, headers);
+      return;
+    }
+
+    if (req.method === 'POST' && requestUrl.pathname === '/api/markdown/notes/append') {
+      const body = await readJsonBody(req);
+      const result = await appendMarkdownNote({
+        documentId: body.documentId || body.path,
         markdown: body.markdown,
       });
       sendJson(res, 200, result, headers);
@@ -329,8 +381,12 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`PageStudy 飞书桥接已启动：http://${HOST}:${PORT}`);
-  console.log(`使用命令：${LARK_CLI}`);
+  const notion = notionStatus();
+  const markdown = markdownStatus();
+  console.log(`PageStudy 文档桥接已启动：http://${HOST}:${PORT}`);
+  console.log(`飞书 CLI：${LARK_CLI}`);
+  console.log(`Notion：${notion.enabled ? '已配置 Token' : '未配置 NOTION_TOKEN'}`);
+  console.log(`本地 Markdown：${markdown.enabled ? markdown.markdownDir : '未配置 PAGESTUDY_MARKDOWN_DIR'}`);
   if (TOKEN) console.log('已启用 x-pagestudy-token 校验。');
   console.log('按 Ctrl+C 停止。');
 });

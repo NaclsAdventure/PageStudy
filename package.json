@@ -1,14 +1,15 @@
 {
   "name": "pagestudy",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build && vite build --config vite.content.config.ts && vite build --config vite.background.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "bridge": "node bridge/lark-bridge.mjs"
+    "bridge": "node bridge/lark-bridge.mjs",
+    "verify:bridge": "node scripts/verify-bridge.mjs"
   },
   "dependencies": {
     "idb": "^8.0.0",

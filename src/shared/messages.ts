@@ -2,12 +2,15 @@ import type {
   BridgeHealth,
   ChatRequest,
   ChatStreamEvent,
+  DocumentTarget,
+  DocumentWriteResult,
   FeishuWriteResult,
   ModelOption,
   PageContext,
   PageSummary,
   SelectionContext,
   Settings,
+  StudyRecord,
   SummaryRequest,
 } from './types';
 
@@ -20,8 +23,13 @@ export type RuntimeMessage =
   | { type: 'PS_TEST_PROVIDER' }
   | { type: 'PS_SUMMARIZE'; request: SummaryRequest }
   | { type: 'PS_BRIDGE_HEALTH' }
+  | { type: 'PS_WRITE_DOCUMENT'; target: DocumentTarget; title: string; markdown: string; recordId?: string }
+  | { type: 'PS_APPEND_DOCUMENT'; target: DocumentTarget; documentId: string; markdown: string; recordId?: string }
   | { type: 'PS_WRITE_FEISHU'; title: string; markdown: string; parentToken?: string }
   | { type: 'PS_APPEND_FEISHU'; documentId: string; markdown: string }
+  | { type: 'PS_ENQUEUE_SYNC'; recordId: string; target?: DocumentTarget }
+  | { type: 'PS_FLUSH_SYNC' }
+  | { type: 'PS_GET_RECORD'; recordId: string }
   | { type: 'PS_OPEN_PANEL' }
   | { type: 'PS_SELECTION_CHANGED'; selection: SelectionContext | null; tabId?: number };
 
@@ -64,6 +72,21 @@ export interface TestProviderResponse {
 export interface BridgeHealthResponse extends BridgeHealth {}
 
 export interface FeishuWriteResponse extends FeishuWriteResult {}
+
+export interface DocumentWriteResponse extends DocumentWriteResult {}
+
+export interface RecordResponse {
+  ok: boolean;
+  record?: StudyRecord;
+  error?: string;
+}
+
+export interface SyncEnqueueResponse {
+  ok: boolean;
+  queued?: boolean;
+  target?: DocumentTarget;
+  error?: string;
+}
 
 export type BackgroundResponse = unknown;
 

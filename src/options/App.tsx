@@ -14,7 +14,7 @@ import { clearRecords, exportRecords, importRecords, listRecords } from '../shar
 import { sendRuntimeMessage, type BridgeHealthResponse, type ModelsResponse } from '../shared/messages';
 import './styles.css';
 
-type Tab = 'model' | 'feishu' | 'skills' | 'data';
+type Tab = 'model' | 'feishu' | 'documents' | 'skills' | 'data';
 
 interface SettingsResponse {
   ok: boolean;
@@ -157,14 +157,46 @@ export default function OptionsApp() {
       const health: BridgeHealth = {
         ok: Boolean(response.ok),
         larkCli: Boolean(response.larkCli),
+        notion: Boolean(response.notion),
+        markdown: Boolean(response.markdown),
+        markdownDir: response.markdownDir,
         version: response.version,
+        syncPending: response.syncPending,
+        syncError: response.syncError,
         error: response.error,
       };
       setBridge(health);
-      if (health.ok && health.larkCli) flash('本地飞书桥接服务连接成功。');
-      else flash(health.error ?? '桥接服务未运行。', true);
+      if (health.ok) {
+        const ready = [
+          health.larkCli ? '飞书' : '',
+          health.notion ? 'Notion' : '',
+          health.markdown ? '本地 Markdown' : '',
+        ].filter(Boolean);
+        flash(ready.length > 0 ? `桥接连接成功：${ready.join('、')}。` : '桥接已连接，但还没有启用任何文档目标。');
+      } else {
+        flash(health.error ?? '桥接服务未运行。', true);
+      }
     } catch (error) {
-      setBridge({ ok: false, larkCli: false, error: asErrorMessage(error) });
+      setBridge({ ok: false, larkCli: false, notion: false, markdown: false, error: asErrorMessage(error) });
+      flash(asErrorMessage(error), true);
+    } finally {
+      setBridgeLoading(false);
+    }
+  };
+
+  const flushSync = async () => {
+    setBridgeLoading(true);
+    try {
+      const response = await sendRuntimeMessage<{
+        ok: boolean;
+        synced?: number;
+        pending?: number;
+        error?: number;
+      }>({ type: 'PS_FLUSH_SYNC' });
+      if (!response.ok) throw new Error('同步队列处理失败。');
+      flash(`同步完成：本次处理 ${response.synced ?? 0} 条；剩余待处理 ${response.pending ?? 0} 条。`);
+      await checkBridge();
+    } catch (error) {
       flash(asErrorMessage(error), true);
     } finally {
       setBridgeLoading(false);
@@ -209,6 +241,7 @@ export default function OptionsApp() {
           description: typeof record.description === 'string' ? record.description.trim() : '',
           prompt,
           builtin: false,
+          sourceUrl: typeof record.sourceUrl === 'string' ? record.sourceUrl.trim() : undefined,
         });
       }
       if (skills.length === 0) throw new Error('没有找到包含 name 和 prompt 的 Skill。');
@@ -306,7 +339,8 @@ export default function OptionsApp() {
           {(
             [
               ['model', '模型与推理'],
-              ['feishu', '飞书桥接'],
+              ['documents', '文档与同步'],
+              ['feishu', '桥接与飞书'],
               ['skills', 'Skills'],
               ['data', '数据与记录'],
             ] as Array<[Tab, string]>
@@ -322,7 +356,7 @@ export default function OptionsApp() {
           ))}
         </nav>
         <div className="options-sidebar-footer">
-          <span>v0.1.0 · MV3</span>
+          <span>v0.2.0 · MV3</span>
           <button type="button" onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') })}>
             打开记录库
           </button>
@@ -333,7 +367,7 @@ export default function OptionsApp() {
         <header className="options-header">
           <div>
             <span className="eyebrow">PAGE STUDY / SETTINGS</span>
-            <h1>{tab === 'model' && '模型与推理'}{tab === 'feishu' && '飞书桥接'}{tab === 'skills' && 'Skills'}{tab === 'data' && '数据与记录'}</h1>
+            <h1>{tab === 'model' && '模型与推理'}{tab === 'documents' && '文档与同步'}{tab === 'feishu' && '桥接与飞书'}{tab === 'skills' && 'Skills'}{tab === 'data' && '数据与记录'}</h1>
           </div>
           <button type="button" className="save-button" onClick={() => void save()} disabled={saving}>
             {saving ? '保存中…' : '保存设置'}
@@ -468,6 +502,144 @@ export default function OptionsApp() {
           </div>
         ) : null}
 
+        {tab === 'documents' ? (
+          <div className="options-content">
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>文档目标</h2>
+                  <p>飞书、Notion 和本地 Markdown 共用同一个本地桥接；所有 Token 只放在桥接进程环境变量里。</p>
+                </div>
+              </div>
+              <div className="form-grid">
+                <label className="field">
+                  <span>默认保存目标</span>
+                  <select
+                    value={settings.documents.defaultTarget}
+                    onChange={(event) =>
+                      setSettings({
+                        ...settings,
+                        documents: {
+                          ...settings.documents,
+                          defaultTarget: event.target.value as Settings['documents']['defaultTarget'],
+                        },
+                      })
+                    }
+                  >
+                    <option value="feishu">飞书文档</option>
+                    <option value="notion">Notion 页面</option>
+                    <option value="markdown">本地 Markdown（Obsidian / Logseq）</option>
+                  </select>
+                  <small>侧栏和记录库会默认选中这个目标，仍可临时切换。</small>
+                </label>
+                <div className="field">
+                  <span>保存后自动同步</span>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={settings.documents.autoSync}
+                      onChange={(event) =>
+                        setSettings({
+                          ...settings,
+                          documents: { ...settings.documents, autoSync: event.target.checked },
+                        })
+                      }
+                    />
+                    记录或总结保存后，自动创建/追加到默认目标
+                  </label>
+                  <small>失败会保留队列并退避重试；扩展启动时补传。</small>
+                </div>
+                <label className="field full">
+                  <span>Notion 父页面 ID</span>
+                  <input
+                    value={settings.documents.notionParentPageId}
+                    onChange={(event) =>
+                      setSettings({
+                        ...settings,
+                        documents: { ...settings.documents, notionParentPageId: event.target.value },
+                      })
+                    }
+                    placeholder="32 位 page ID 或含 ID 的 Notion 页面 URL"
+                    spellCheck={false}
+                  />
+                  <small>父页面必须已分享给 Notion Integration；桥接环境变量 NOTION_PARENT_PAGE_ID 可作为兜底。</small>
+                </label>
+                <label className="field full">
+                  <span>Markdown 子目录（可选）</span>
+                  <input
+                    value={settings.documents.markdownDirectory}
+                    onChange={(event) =>
+                      setSettings({
+                        ...settings,
+                        documents: { ...settings.documents, markdownDirectory: event.target.value },
+                      })
+                    }
+                    placeholder="例如：PageStudy（相对桥接的 PAGESTUDY_MARKDOWN_DIR）"
+                    spellCheck={false}
+                  />
+                  <small>文件名会自动加时间戳；追加时使用桥接返回的相对路径。Obsidian 和 Logseq 可直接打开该目录。</small>
+                </label>
+              </div>
+              <div className="button-row">
+                <button type="button" className="secondary-action" onClick={() => void checkBridge()} disabled={bridgeLoading}>
+                  {bridgeLoading ? '检测中…' : '保存并检测桥接'}
+                </button>
+                {bridge ? (
+                  <span className={bridge.ok ? 'health ok' : 'health bad'}>
+                    {bridge.ok ? `桥接已连接${bridge.version ? ` · ${bridge.version}` : ''}` : bridge.error ?? '桥接未运行'}
+                  </span>
+                ) : null}
+                <button type="button" className="ghost-button" onClick={() => void flushSync()} disabled={bridgeLoading}>
+                  立即处理同步队列
+                </button>
+              </div>
+              {bridge?.ok ? (
+                <div className="health-grid">
+                  <span className={bridge.larkCli ? 'health ok' : 'health bad'}>飞书 {bridge.larkCli ? '就绪' : '未就绪'}</span>
+                  <span className={bridge.notion ? 'health ok' : 'health bad'}>Notion {bridge.notion ? '已配置' : '未配置 Token'}</span>
+                  <span className={bridge.markdown ? 'health ok' : 'health bad'}>
+                    本地 Markdown {bridge.markdown ? `已启用：${bridge.markdownDir ?? ''}` : '未配置目录'}
+                  </span>
+                  {bridge.syncPending || bridge.syncError ? (
+                    <span className="health bad">
+                      自动同步队列：待处理 {bridge.syncPending ?? 0} · 失败 {bridge.syncError ?? 0}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+            </section>
+
+            <section className="panel subtle-panel">
+              <h2>启动桥接</h2>
+              <p>在 PageStudy 项目目录先设置环境变量，再启动桥接（PowerShell 示例）：</p>
+              <pre className="command-block">{`$env:NOTION_TOKEN="secret_xxx"
+$env:NOTION_PARENT_PAGE_ID="你的父页面 ID"
+$env:PAGESTUDY_MARKDOWN_DIR="D:\\Notes\\PageStudy"
+npm run bridge`}</pre>
+              <p>
+                Notion：在 Notion 创建 Integration，复制 Internal Integration Secret；打开父页面 → 分享 →
+                邀请该 Integration。扩展只支持父页面，暂不支持直接写入 database。
+              </p>
+              <p>
+                Obsidian / Logseq：把 PAGESTUDY_MARKDOWN_DIR 指向 vault 内的一个目录。桥接会写入
+                <code> .md </code>文件，追加时保留原文并插入分隔线。
+              </p>
+            </section>
+
+            <section className="panel subtle-panel">
+              <h2>自动同步的边界</h2>
+              <p>
+                保存学习记录或总结后会立即尝试同步；失败任务写入 chrome.storage.local，并用 alarm
+                退避重试，浏览器下次启动时继续补传。
+              </p>
+              <p className="muted">
+                Manifest V3 不能保证在关闭浏览器的瞬间完成网络请求，因此“关闭时自动上传”是尽力而为：
+                真正的保障是保存后立即同步 + 持久队列 + 启动补偿，而不是依赖 onSuspend 的异步请求。
+              </p>
+            </section>
+          </div>
+        ) : null}
+
         {tab === 'feishu' ? (
           <div className="options-content">
             <section className="panel">
@@ -538,7 +710,8 @@ export default function OptionsApp() {
                 如果飞书 CLI 的用户登录过期，首次写入时会自动尝试刷新，失败时会在侧栏显示错误。
               </p>
               <p className="muted">
-                写入动作必须由你在侧栏点击“写入飞书”触发，模型不能自行发布或修改外部文档。
+                飞书写入由你点击“写入飞书”或明确开启自动同步后触发，模型不能自行发布或修改外部文档。
+                Notion 和本地 Markdown 的配置在“文档与同步”页。
               </p>
             </section>
           </div>
@@ -559,6 +732,11 @@ export default function OptionsApp() {
                     <div>
                       <strong>{skill.name}</strong>
                       <p>{skill.description}</p>
+                      {skill.sourceUrl ? (
+                        <a className="skill-source" href={skill.sourceUrl} target="_blank" rel="noreferrer">
+                          方法来源
+                        </a>
+                      ) : null}
                     </div>
                     <span className="builtin-badge">内置</span>
                   </div>

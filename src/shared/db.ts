@@ -1,4 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
+import { mergeDocumentRefs, mergeSyncStates } from './documents';
 import type { StudyRecord } from './types';
 
 interface PageStudyDB extends DBSchema {
@@ -31,7 +32,18 @@ function getDb(): Promise<IDBPDatabase<PageStudyDB>> {
 
 export async function saveRecord(record: StudyRecord): Promise<void> {
   const db = await getDb();
-  await db.put('records', { ...record, updatedAt: Date.now() });
+  const existing = await db.get('records', record.id);
+  // 后台自动同步与侧栏编辑可能并发：文档引用只增不减，正文/笔记等字段以较新的
+  // updatedAt 为准，避免后台拿着旧快照覆盖用户刚输入的笔记。
+  const newer = existing && existing.updatedAt > record.updatedAt ? existing : record;
+  const next: StudyRecord = {
+    ...newer,
+    feishu: record.feishu ?? existing?.feishu ?? newer.feishu ?? null,
+    documents: mergeDocumentRefs(existing?.documents, record.documents),
+    sync: mergeSyncStates(existing?.sync, record.sync),
+    updatedAt: Date.now(),
+  };
+  await db.put('records', next);
 }
 
 export async function getRecord(id: string): Promise<StudyRecord | undefined> {

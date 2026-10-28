@@ -17,12 +17,38 @@ export interface BridgeConfig {
   parentToken: string;
 }
 
+export type DocumentTarget = 'feishu' | 'notion' | 'markdown';
+
+export interface DocumentSettings {
+  autoSync: boolean;
+  defaultTarget: DocumentTarget;
+  notionParentPageId: string;
+  markdownDirectory: string;
+}
+
+export interface DocumentRef {
+  target: DocumentTarget;
+  documentId: string;
+  url: string;
+  writtenAt: number;
+  title?: string;
+}
+
+export interface DocumentSyncState {
+  status: 'pending' | 'synced' | 'error';
+  attempts: number;
+  lastError?: string;
+  nextAttemptAt?: number;
+  updatedAt: number;
+}
+
 export interface Skill {
   id: string;
   name: string;
   description: string;
   prompt: string;
   builtin: boolean;
+  sourceUrl?: string;
 }
 
 export interface Settings {
@@ -31,6 +57,7 @@ export interface Settings {
   providers: Record<ProviderId, ProviderConfig>;
   outputLanguage: string;
   feishu: BridgeConfig;
+  documents: DocumentSettings;
   customSkills: Skill[];
 }
 
@@ -53,6 +80,7 @@ export interface PublicSettings {
     parentToken: string;
     hasToken: boolean;
   };
+  documents: DocumentSettings;
   customSkills: Skill[];
 }
 
@@ -78,6 +106,7 @@ export interface PageContext {
   capturedAt: number;
   contentHash: string;
   outline: OutlineNode[];
+  manual?: boolean;
 }
 
 export interface SelectionContext {
@@ -129,6 +158,8 @@ export interface StudyRecord {
   createdAt: number;
   updatedAt: number;
   feishu: FeishuDocumentRef | null;
+  documents?: Partial<Record<DocumentTarget, DocumentRef>>;
+  sync?: Partial<Record<DocumentTarget, DocumentSyncState>>;
   error: string | null;
 }
 
@@ -154,7 +185,12 @@ export interface ModelOption {
 export interface BridgeHealth {
   ok: boolean;
   larkCli: boolean;
+  notion?: boolean;
+  markdown?: boolean;
+  markdownDir?: string;
   version?: string;
+  syncPending?: number;
+  syncError?: number;
   error?: string;
 }
 
@@ -162,6 +198,15 @@ export interface FeishuWriteResult {
   ok: boolean;
   url?: string;
   documentId?: string;
+  error?: string;
+}
+
+export interface DocumentWriteResult {
+  ok: boolean;
+  target: DocumentTarget;
+  documentId?: string;
+  url?: string;
+  path?: string;
   error?: string;
 }
 

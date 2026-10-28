@@ -572,3 +572,41 @@ button {
     grid-column: auto;
   }
 }
+
+.checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.checkbox-row input {
+  margin-top: 3px;
+  accent-color: var(--teal);
+}
+
+.health-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.health-grid .health {
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.skill-source {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: 10px;
+  text-decoration: none;
+}

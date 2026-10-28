@@ -38,6 +38,26 @@ describe('normalizeSettings', () => {
     expect(settings.customSkills[0].name).toBe('面试官');
     expect(settings.feishu.url).toBe('http://127.0.0.1:17373');
     expect(settings.feishu.parentToken).toBe('fld123');
+    expect(settings.documents.defaultTarget).toBe('feishu');
+    expect(settings.documents.autoSync).toBe(false);
+    expect(settings.customSkills[0].sourceUrl).toBeUndefined();
+  });
+
+  it('归一化文档目标与同步设置', () => {
+    const settings = normalizeSettings({
+      documents: {
+        autoSync: true,
+        defaultTarget: 'notion',
+        notionParentPageId: ' 1234567890abcdef1234567890abcdef ',
+        markdownDirectory: ' PageStudy ',
+      },
+    });
+    expect(settings.documents).toEqual({
+      autoSync: true,
+      defaultTarget: 'notion',
+      notionParentPageId: '1234567890abcdef1234567890abcdef',
+      markdownDirectory: 'PageStudy',
+    });
   });
 
   it('拒绝非法的推理强度和未知服务商', () => {
@@ -63,6 +83,8 @@ describe('toPublicSettings', () => {
     expect(JSON.stringify(publicSettings)).not.toContain('bridge-secret');
     expect(publicSettings.feishu.parentToken).toBe('fld-public');
     expect(publicSettings.feishu.hasToken).toBe(true);
+    expect(publicSettings.documents).toEqual(settings.documents);
+    expect(JSON.stringify(publicSettings)).not.toContain('bridge-secret');
   });
 });
 

@@ -1,5 +1,7 @@
 import { getDefaultSettings, PROVIDER_DEFAULTS, PROVIDER_LABELS, SETTINGS_KEY } from './constants';
 import type {
+  DocumentSettings,
+  DocumentTarget,
   ProviderConfig,
   ProviderId,
   PublicProviderConfig,
@@ -11,6 +13,7 @@ import type {
 
 const PROVIDER_IDS: ProviderId[] = ['deepseek', 'openai', 'anthropic', 'gemini', 'custom'];
 const REASONING_LEVELS: ReasoningEffort[] = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
+const DOCUMENT_TARGETS: DocumentTarget[] = ['feishu', 'notion', 'markdown'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -55,6 +58,20 @@ function normalizeSkill(raw: unknown): Skill | null {
     description: asString(raw.description).trim(),
     prompt,
     builtin: false,
+    sourceUrl: asString(raw.sourceUrl).trim() || undefined,
+  };
+}
+
+function normalizeDocuments(raw: unknown, fallback: DocumentSettings): DocumentSettings {
+  if (!isRecord(raw)) return { ...fallback };
+  const target = asString(raw.defaultTarget);
+  return {
+    autoSync: typeof raw.autoSync === 'boolean' ? raw.autoSync : fallback.autoSync,
+    defaultTarget: DOCUMENT_TARGETS.includes(target as DocumentTarget)
+      ? (target as DocumentTarget)
+      : fallback.defaultTarget,
+    notionParentPageId: asString(raw.notionParentPageId).trim(),
+    markdownDirectory: asString(raw.markdownDirectory).trim(),
   };
 }
 
@@ -85,6 +102,7 @@ export function normalizeSettings(raw: unknown): Settings {
       token: asString(rawFeishu.token),
       parentToken: asString(rawFeishu.parentToken).trim(),
     },
+    documents: normalizeDocuments(raw.documents, base.documents),
     customSkills,
   };
 }
@@ -123,6 +141,7 @@ export function toPublicSettings(settings: Settings): PublicSettings {
       parentToken: settings.feishu.parentToken,
       hasToken: Boolean(settings.feishu.token),
     },
+    documents: { ...settings.documents },
     customSkills: settings.customSkills,
   };
 }

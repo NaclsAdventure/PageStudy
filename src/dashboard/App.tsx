@@ -1,18 +1,27 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { StudyRecord } from '../shared/types';
+import type { BridgeHealth, DocumentTarget, StudyRecord } from '../shared/types';
 import { deleteRecord, listRecords, saveRecord } from '../shared/db';
 import { asErrorMessage, formatDate, safeHostname } from '../shared/utils';
 import { flattenOutline } from '../shared/skills';
+import { recordToMarkdown } from '../shared/markdown';
+import type { BridgeHealthResponse } from '../shared/messages';
+import { sendRuntimeMessage } from '../shared/messages';
 import {
-  recordToFeishuAppendMarkdown,
-  recordToFeishuTitle,
-  recordToMarkdown,
-} from '../shared/markdown';
-import { sendRuntimeMessage, type FeishuWriteResponse } from '../shared/messages';
+  DOCUMENT_TARGETS,
+  DOCUMENT_TARGET_LABELS,
+  DOCUMENT_TARGET_SHORT_LABELS,
+  getDocumentRef,
+  syncStateText,
+  withDocumentRef,
+} from '../shared/documents';
+import { writeRecordToDocument, type DocumentWriteMode } from '../shared/document-actions';
+import { loadSettings } from '../shared/settings';
+import { filterWikiPages, buildWiki, type WikiPage, type WikiPageKind } from '../shared/wiki';
 import OutlineTree from '../sidepanel/components/OutlineTree';
 import './styles.css';
 
 type SortMode = 'recent' | 'title';
+type ViewMode = 'library' | 'wiki';
 
 export default function DashboardApp() {
   const [records, setRecords] = useState<StudyRecord[]>([]);
@@ -22,11 +31,23 @@ export default function DashboardApp() {
   const [sort, setSort] = useState<SortMode>('recent');
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null);
-  const [feishuLoading, setFeishuLoading] = useState(false);
+  const [docLoading, setDocLoading] = useState(false);
+  const [docTarget, setDocTarget] = useState<DocumentTarget>('feishu');
+  const [bridgeHealth, setBridgeHealth] = useState<BridgeHealth | null>(null);
   const [tagInput, setTagInput] = useState('');
+  const [viewMode, setViewMode] = useState<ViewMode>(
+    window.location.hash === '#wiki' ? 'wiki' : 'library',
+  );
+  const [wikiQuery, setWikiQuery] = useState('');
+  const [wikiKind, setWikiKind] = useState<'all' | WikiPageKind>('all');
+  const [wikiPageId, setWikiPageId] = useState<string | null>(null);
 
   useEffect(() => {
     void refresh();
+    void loadSettings().then((settings) => setDocTarget(settings.documents.defaultTarget));
+    const onHashChange = () => setViewMode(window.location.hash === '#wiki' ? 'wiki' : 'library');
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
   const flash = (text: string, error = false) => {
@@ -93,6 +114,25 @@ export default function DashboardApp() {
     if (selected && selected.id !== selectedId) setSelectedId(selected.id);
   }, [selected, selectedId]);
 
+  const wiki = useMemo(() => buildWiki(records), [records]);
+  const wikiPages = useMemo(
+    () => filterWikiPages(wiki.pages, wikiQuery, wikiKind),
+    [wiki.pages, wikiQuery, wikiKind],
+  );
+  const selectedWiki = useMemo(
+    () => wikiPages.find((page) => page.id === wikiPageId) ?? wikiPages[0] ?? null,
+    [wikiPageId, wikiPages],
+  );
+
+  useEffect(() => {
+    if (selectedWiki && selectedWiki.id !== wikiPageId) setWikiPageId(selectedWiki.id);
+  }, [selectedWiki, wikiPageId]);
+
+  const switchView = (mode: ViewMode) => {
+    setViewMode(mode);
+    window.history.replaceState(null, '', mode === 'wiki' ? '#wiki' : '#library');
+  };
+
   const updateSelected = async (patch: Partial<StudyRecord>) => {
     if (!selected) return;
     const next: StudyRecord = { ...selected, ...patch, updatedAt: Date.now() };
@@ -101,7 +141,14 @@ export default function DashboardApp() {
   };
 
   const openSource = () => {
-    if (selected) void chrome.tabs.create({ url: selected.page.url });
+    if (!selected) return;
+    if (!selected.page.url) {
+      flash('这条手动摘录没有填写地址。');
+      return;
+    }
+    void chrome.tabs
+      .create({ url: selected.page.url })
+      .catch((error) => flash(`无法打开原文：${asErrorMessage(error)}`, true));
   };
 
   const copyMarkdown = async () => {
@@ -127,47 +174,71 @@ export default function DashboardApp() {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  const writeFeishu = async (mode: 'create' | 'append' = 'create') => {
-    if (!selected) return;
-    if (mode === 'create' && !selected.summary) {
-      flash('请先在侧栏生成总结。', true);
-      return;
-    }
-    if (mode === 'append' && !selected.feishu?.documentId) {
-      flash('还没有已写入的飞书文档，请先创建。', true);
-      return;
-    }
-    setFeishuLoading(true);
+  const checkBridge = async (): Promise<BridgeHealth> => {
     try {
-      const response =
-        mode === 'append'
-          ? await sendRuntimeMessage<FeishuWriteResponse>({
-              type: 'PS_APPEND_FEISHU',
-              documentId: selected.feishu?.documentId ?? '',
-              markdown: recordToFeishuAppendMarkdown(selected),
-            })
-          : await sendRuntimeMessage<FeishuWriteResponse>({
-              type: 'PS_WRITE_FEISHU',
-              title: recordToFeishuTitle(selected),
-              markdown: recordToMarkdown(selected),
-            });
-      if (!response.ok) throw new Error(response.error ?? '飞书写入失败');
-      const next: StudyRecord = {
-        ...selected,
-        feishu: {
-          url: response.url ?? selected.feishu?.url ?? '',
-          documentId: response.documentId ?? selected.feishu?.documentId ?? '',
-          writtenAt: Date.now(),
-        },
-        updatedAt: Date.now(),
+      const response = await sendRuntimeMessage<BridgeHealthResponse & { ok: boolean }>({
+        type: 'PS_BRIDGE_HEALTH',
+      });
+      const health: BridgeHealth = {
+        ok: Boolean(response.ok),
+        larkCli: Boolean(response.larkCli),
+        notion: Boolean(response.notion),
+        markdown: Boolean(response.markdown),
+        markdownDir: response.markdownDir,
+        version: response.version,
+        syncPending: response.syncPending,
+        syncError: response.syncError,
+        error: response.error,
       };
-      await updateSelected(next);
-      flash(mode === 'append' ? '已追加到飞书文档。' : '已写入飞书文档。');
+      setBridgeHealth(health);
+      return health;
+    } catch (error) {
+      const health: BridgeHealth = {
+        ok: false,
+        larkCli: false,
+        notion: false,
+        markdown: false,
+        error: asErrorMessage(error),
+      };
+      setBridgeHealth(health);
+      return health;
+    }
+  };
+
+  const writeDocument = async (target: DocumentTarget, mode: DocumentWriteMode = 'auto') => {
+    if (!selected) return;
+    if (mode === 'append' && !getDocumentRef(selected, target)) {
+      flash('还没有已写入该平台的文档，请先创建。', true);
+      return;
+    }
+    setDocLoading(true);
+    try {
+      const health = await checkBridge();
+      if (!health.ok) throw new Error(health.error ?? '本地文档桥接服务未运行，请先运行 npm run bridge。');
+      if (target === 'feishu' && !health.larkCli) throw new Error('飞书 CLI 未就绪，请检查 lark-cli 登录状态。');
+      if (target === 'notion' && !health.notion) throw new Error('Notion 未配置，请先在桥接环境变量中设置 NOTION_TOKEN。');
+      if (target === 'markdown' && !health.markdown) {
+        throw new Error('本地 Markdown 未配置，请先设置 PAGESTUDY_MARKDOWN_DIR。');
+      }
+      const response = await writeRecordToDocument(selected, target, mode);
+      if (!response.ok || !response.documentId) {
+        throw new Error(response.error ?? `${DOCUMENT_TARGET_LABELS[target]}写入失败`);
+      }
+      await updateSelected(
+        withDocumentRef(selected, {
+          target,
+          documentId: response.documentId,
+          url: response.url ?? '',
+          writtenAt: Date.now(),
+          title: selected.page.title,
+        }),
+      );
+      flash(mode === 'append' ? '已追加到文档。' : '已写入文档。');
       if (mode === 'create' && response.url) void chrome.tabs.create({ url: response.url });
     } catch (error) {
       flash(asErrorMessage(error), true);
     } finally {
-      setFeishuLoading(false);
+      setDocLoading(false);
     }
   };
 
@@ -210,6 +281,26 @@ export default function DashboardApp() {
           </div>
         </div>
         <div className="dashboard-actions">
+          <div className="view-switch" role="tablist" aria-label="视图">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={viewMode === 'library'}
+              className={viewMode === 'library' ? 'active' : ''}
+              onClick={() => switchView('library')}
+            >
+              记录库
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={viewMode === 'wiki'}
+              className={viewMode === 'wiki' ? 'active' : ''}
+              onClick={() => switchView('wiki')}
+            >
+              本地 Wiki
+            </button>
+          </div>
           <button type="button" className="secondary-action" onClick={openOptions}>
             设置
           </button>
@@ -219,6 +310,23 @@ export default function DashboardApp() {
         </div>
       </header>
 
+      {viewMode === 'wiki' ? (
+        <WikiBrowser
+          pages={wikiPages}
+          byId={wiki.byId}
+          query={wikiQuery}
+          onQueryChange={setWikiQuery}
+          kind={wikiKind}
+          onKindChange={setWikiKind}
+          selected={selectedWiki}
+          onSelect={setWikiPageId}
+          counts={{ notes: wiki.noteCount, tags: wiki.tagCount, concepts: wiki.conceptCount }}
+          onOpenRecord={(recordId) => {
+            setSelectedId(recordId);
+            switchView('library');
+          }}
+        />
+      ) : (
       <div className="dashboard-body">
         <aside className="library-panel">
           <div className="library-head">
@@ -282,7 +390,7 @@ export default function DashboardApp() {
                 <span className="record-item-main">
                   <strong>{record.page.title}</strong>
                   <span>
-                    {safeHostname(record.page.url)} · {formatDate(record.updatedAt)}
+                    {record.page.manual ? '手动摘录' : safeHostname(record.page.url)} · {formatDate(record.updatedAt)}
                   </span>
                   {record.tags.length > 0 ? (
                     <span className="record-item-tags">{record.tags.slice(0, 3).map((tag) => `#${tag}`).join(' ')}</span>
@@ -299,13 +407,17 @@ export default function DashboardApp() {
               <div className="detail-head">
                 <div className="detail-heading">
                   <span className="eyebrow">
-                    {safeHostname(selected.page.url)}
+                    {selected.page.manual ? '手动摘录' : safeHostname(selected.page.url)}
                     {selected.page.author ? ` · ${selected.page.author}` : ''}
                   </span>
                   <h1>{selected.page.title}</h1>
-                  <a href={selected.page.url} target="_blank" rel="noreferrer" className="source-link">
-                    {selected.page.url}
-                  </a>
+                  {selected.page.url ? (
+                    <a href={selected.page.url} target="_blank" rel="noreferrer" className="source-link">
+                      {selected.page.url}
+                    </a>
+                  ) : (
+                    <span className="source-link">手动摘录（未填写地址）</span>
+                  )}
                   <div className="detail-meta">
                     <span>记录于 {formatDate(selected.createdAt)}</span>
                     <span>{flattenOutline(selected.page.outline).length} 个标题</span>
@@ -319,27 +431,44 @@ export default function DashboardApp() {
                   <button type="button" className="secondary-action" onClick={openSource}>
                     打开原文
                   </button>
+                  <select
+                    className="doc-target-select"
+                    aria-label="文档目标"
+                    value={docTarget}
+                    onChange={(event) => setDocTarget(event.target.value as DocumentTarget)}
+                    disabled={docLoading}
+                  >
+                    {DOCUMENT_TARGETS.map((target) => (
+                      <option value={target} key={target}>
+                        {DOCUMENT_TARGET_LABELS[target]}
+                      </option>
+                    ))}
+                  </select>
                   <button
                     type="button"
                     className="primary-action"
-                    onClick={() => void writeFeishu(selected.feishu?.documentId ? 'append' : 'create')}
-                    disabled={feishuLoading || (!selected.feishu?.documentId && !selected.summary)}
-                    title={!selected.feishu?.documentId && !selected.summary ? '请先在侧栏生成总结' : undefined}
+                    onClick={() =>
+                      void writeDocument(
+                        docTarget,
+                        getDocumentRef(selected, docTarget) ? 'append' : 'create',
+                      )
+                    }
+                    disabled={docLoading}
                   >
-                    {feishuLoading
+                    {docLoading
                       ? '写入中…'
-                      : selected.feishu?.documentId
-                        ? '追加到飞书'
-                        : '写入飞书'}
+                      : `${getDocumentRef(selected, docTarget) ? '追加到' : '写入'}${
+                          DOCUMENT_TARGET_SHORT_LABELS[docTarget]
+                        }`}
                   </button>
-                  {selected.feishu?.documentId ? (
+                  {getDocumentRef(selected, docTarget) ? (
                     <button
                       type="button"
                       className="secondary-action"
-                      onClick={() => void writeFeishu('create')}
-                      disabled={feishuLoading || !selected.summary}
+                      onClick={() => void writeDocument(docTarget, 'create')}
+                      disabled={docLoading}
                     >
-                      新建文档
+                      新建一份
                     </button>
                   ) : null}
                 </div>
@@ -466,17 +595,34 @@ export default function DashboardApp() {
                         下载 Markdown
                       </button>
                     </div>
-                    {selected.feishu ? (
-                      <p className="feishu-link">
-                        飞书文档：
-                        {selected.feishu.url ? (
-                          <a href={selected.feishu.url} target="_blank" rel="noreferrer">
-                            打开
-                          </a>
-                        ) : (
-                          selected.feishu.documentId
-                        )}
-                      </p>
+                    <div className="document-refs">
+                      {DOCUMENT_TARGETS.map((target) => {
+                        const ref = getDocumentRef(selected, target);
+                        if (!ref) return null;
+                        const sync = selected.sync?.[target];
+                        return (
+                          <div className="document-ref" key={target}>
+                            <span className="document-ref-label">
+                              {DOCUMENT_TARGET_SHORT_LABELS[target]}
+                            </span>
+                            {ref.url ? (
+                              <a href={ref.url} target="_blank" rel="noreferrer" title={ref.documentId}>
+                                打开文档
+                              </a>
+                            ) : (
+                              <span className="document-path" title={ref.documentId}>
+                                {ref.documentId}
+                              </span>
+                            )}
+                            {sync ? (
+                              <span className={`sync-state sync-${sync.status}`}>{syncStateText(sync)}</span>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {bridgeHealth && !bridgeHealth.ok ? (
+                      <p className="muted">桥接未连接：{bridgeHealth.error ?? '请先运行 npm run bridge'}</p>
                     ) : null}
                   </section>
 
@@ -495,8 +641,226 @@ export default function DashboardApp() {
           )}
         </main>
       </div>
+      )}
 
       {notice ? <div className={notice.error ? 'notice error' : 'notice'}>{notice.text}</div> : null}
+    </div>
+  );
+}
+
+interface WikiBrowserProps {
+  pages: WikiPage[];
+  byId: Map<string, WikiPage>;
+  query: string;
+  onQueryChange: (value: string) => void;
+  kind: 'all' | WikiPageKind;
+  onKindChange: (kind: 'all' | WikiPageKind) => void;
+  selected: WikiPage | null;
+  onSelect: (id: string) => void;
+  counts: { notes: number; tags: number; concepts: number };
+  onOpenRecord: (recordId: string) => void;
+}
+
+function WikiBrowser({
+  pages,
+  byId,
+  query,
+  onQueryChange,
+  kind,
+  onKindChange,
+  selected,
+  onSelect,
+  counts,
+  onOpenRecord,
+}: WikiBrowserProps) {
+  const backlinks = selected
+    ? selected.backlinks.map((id) => byId.get(id)).filter((page): page is WikiPage => Boolean(page))
+    : [];
+  const kindLabel = (value: WikiPageKind) =>
+    value === 'note' ? '记录' : value === 'tag' ? '标签' : '概念';
+
+  return (
+    <div className="wiki-shell">
+      <aside className="wiki-list-panel">
+        <div className="library-head">
+          <div>
+            <span className="eyebrow">LOCAL WIKI</span>
+            <h1>我的知识库</h1>
+          </div>
+          <span className="record-total">{counts.notes + counts.tags + counts.concepts}</span>
+        </div>
+        <p className="wiki-intro">
+          每次保存学习记录后自动派生：记录页、标签页和概念页互相建立反链，不需要额外上传。
+        </p>
+        <input
+          className="search-input"
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder="搜索标题、标签、概念…"
+        />
+        <div className="wiki-kind-tabs">
+          {(
+            [
+              ['all', '全部'],
+              ['note', '记录'],
+              ['tag', '标签'],
+              ['concept', '概念'],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              type="button"
+              key={value}
+              className={kind === value ? 'active' : ''}
+              onClick={() => onKindChange(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="wiki-counts">
+          {counts.notes} 条记录 · {counts.tags} 个标签 · {counts.concepts} 个概念
+        </div>
+        <div className="record-list">
+          {pages.length === 0 ? (
+            <p className="empty-hint">还没有 Wiki 页面；先在侧栏保存一条学习记录。</p>
+          ) : null}
+          {pages.map((page) => (
+            <button
+              type="button"
+              key={page.id}
+              className={selected?.id === page.id ? 'record-item active' : 'record-item'}
+              onClick={() => onSelect(page.id)}
+            >
+              <span className={`wiki-kind-badge wiki-kind-${page.kind}`}>{kindLabel(page.kind)}</span>
+              <span className="record-item-main">
+                <strong>{page.title}</strong>
+                <span>{page.overview || page.subtitle}</span>
+                <span className="record-item-tags">
+                  {page.kind === 'note'
+                    ? `${page.backlinks.length} 个主题`
+                    : `${page.recordCount} 条记录`}
+                </span>
+              </span>
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      <main className="detail-panel wiki-detail">
+        {selected ? (
+          <>
+            <div className="detail-head">
+              <div className="detail-heading">
+                <span className="eyebrow">
+                  {kindLabel(selected.kind)}
+                  {selected.subtitle ? ` · ${selected.subtitle}` : ''}
+                </span>
+                <h1>{selected.title}</h1>
+                <div className="detail-meta">
+                  <span>{selected.recordCount} 条记录</span>
+                  {selected.backlinks.length > 0 ? <span>{selected.backlinks.length} 条反链</span> : null}
+                  {selected.tags.length > 0 ? <span>{selected.tags.map((tag) => `#${tag}`).join(' ')}</span> : null}
+                </div>
+              </div>
+              <div className="detail-actions">
+                {selected.recordId ? (
+                  <button
+                    type="button"
+                    className="primary-action"
+                    onClick={() => onOpenRecord(selected.recordId as string)}
+                  >
+                    在记录库查看
+                  </button>
+                ) : null}
+                {selected.sourceUrl ? (
+                  <a className="secondary-action" href={selected.sourceUrl} target="_blank" rel="noreferrer">
+                    打开原文
+                  </a>
+                ) : null}
+              </div>
+            </div>
+
+            <section className="detail-section">
+              <div className="detail-section-heading">
+                <h2>概要</h2>
+                <span>由已保存记录自动生成</span>
+              </div>
+              <p className="overview">{selected.overview || '这条记录还没有概览。'}</p>
+            </section>
+
+            {selected.concepts.length > 0 ? (
+              <section className="detail-section">
+                <div className="detail-section-heading">
+                  <h2>关键概念</h2>
+                </div>
+                <div className="concept-grid">
+                  {selected.concepts.map((concept) => (
+                    <div className="concept-card" key={concept.term}>
+                      <strong>{concept.term}</strong>
+                      <p>{concept.explanation || '暂无解释。'}</p>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            {selected.sections.length > 0 ? (
+              <section className="detail-section">
+                <div className="detail-section-heading">
+                  <h2>逐节笔记</h2>
+                </div>
+                <div className="wiki-section-list">
+                  {selected.sections.map((section) => (
+                    <article className="wiki-section-card" key={section.outlineId}>
+                      <h3>{section.title}</h3>
+                      <p>{section.summary}</p>
+                      {section.keyPoints.length > 0 ? (
+                        <ul>
+                          {section.keyPoints.map((point) => (
+                            <li key={point}>{point}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </article>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            <section className="detail-section">
+              <div className="detail-section-heading">
+                <h2>反向链接</h2>
+                <span>{backlinks.length}</span>
+              </div>
+              {backlinks.length === 0 ? (
+                <p className="muted">还没有其他页面链接到这里。</p>
+              ) : (
+                <div className="backlink-list">
+                  {backlinks.map((page) => (
+                    <button
+                      type="button"
+                      className="backlink-card"
+                      key={page.id}
+                      onClick={() => onSelect(page.id)}
+                    >
+                      <span className={`wiki-kind-badge wiki-kind-${page.kind}`}>{kindLabel(page.kind)}</span>
+                      <strong>{page.title}</strong>
+                      <span>{page.overview}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+
+          </>
+        ) : (
+          <div className="detail-empty">
+            <span>▤</span>
+            <h1>本地 Wiki 还没有页面</h1>
+            <p>保存第一条学习记录后，这里会出现记录页、标签页和概念页。</p>
+          </div>
+        )}
+      </main>
     </div>
   );
 }

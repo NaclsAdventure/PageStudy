@@ -113,9 +113,9 @@ export function recordToMarkdown(record: StudyRecord): string {
 }
 
 /**
- * 追加内容只写“本次更新”，不重复整篇概览和大纲，避免飞书文档越追加越臃肿。
+ * 追加内容只写“本次更新”，不重复整篇概览和大纲，避免文档越追加越臃肿。
  */
-export function recordToFeishuAppendMarkdown(record: StudyRecord, now = Date.now()): string {
+export function recordToAppendMarkdown(record: StudyRecord, now = Date.now()): string {
   const lines: string[] = ['', '---', '', `## 追加更新 · ${formatDate(now)}`];
   if (record.summary) {
     lines.push('', '### 内容概览', '', record.summary.overview.trim() || '（暂无概览）');
@@ -136,7 +136,7 @@ export function recordToFeishuAppendMarkdown(record: StudyRecord, now = Date.now
   return lines.join('\n');
 }
 
-export function recordToFeishuTitle(record: StudyRecord): string {
+export function recordToDocumentTitle(record: StudyRecord): string {
   const title = record.page.title.trim() || '未命名网页';
   const date = new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit',
@@ -144,6 +144,10 @@ export function recordToFeishuTitle(record: StudyRecord): string {
   }).format(new Date(record.createdAt));
   return `学习记录 · ${title} · ${date}`;
 }
+
+// 旧名字保留给已有导入和测试；行为已通用化。
+export const recordToFeishuAppendMarkdown = recordToAppendMarkdown;
+export const recordToFeishuTitle = recordToDocumentTitle;
 
 export function recordToText(record: StudyRecord): string {
   const summary = record.summary?.overview ?? '';

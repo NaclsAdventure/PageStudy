@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   ChatRequest,
   BridgeHealth,
+  DocumentTarget,
   PageContext,
   PageSummary,
   PublicSettings,
@@ -20,12 +21,18 @@ import {
   truncate,
 } from '../shared/utils';
 import { flattenOutline, getAllSkills, getSkillById } from '../shared/skills';
+import { recordToMarkdown } from '../shared/markdown';
+import { createManualPage, isRestrictedPageUrl } from '../shared/page';
+import { deleteRecord, findRecordsByUrl, getRecord, saveRecord } from '../shared/db';
 import {
-  recordToFeishuAppendMarkdown,
-  recordToFeishuTitle,
-  recordToMarkdown,
-} from '../shared/markdown';
-import { deleteRecord, findRecordsByUrl, saveRecord } from '../shared/db';
+  DOCUMENT_TARGETS,
+  DOCUMENT_TARGET_LABELS,
+  DOCUMENT_TARGET_SHORT_LABELS,
+  getDocumentRef,
+  syncStateText,
+  withDocumentRef,
+} from '../shared/documents';
+import { writeRecordToDocument, type DocumentWriteMode } from '../shared/document-actions';
 import { SETTINGS_KEY } from '../shared/constants';
 import {
   sendRuntimeMessage,
@@ -33,7 +40,6 @@ import {
   type BridgeHealthResponse,
   type ChatPortEvent,
   type ChatPortRequest,
-  type FeishuWriteResponse,
   type PageContextResponse,
   type SelectionResponse,
   type SummarizeResponse,
@@ -86,11 +92,18 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   const [record, setRecord] = useState<StudyRecord | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
-  const [feishuLoading, setFeishuLoading] = useState(false);
+  const [docLoading, setDocLoading] = useState(false);
+  const [docTarget, setDocTarget] = useState<DocumentTarget>('feishu');
   const [sideTab, setSideTab] = useState<SideTab>('chat');
   const [notice, setNotice] = useState<Notice | null>(null);
   const [tagInput, setTagInput] = useState('');
   const [bridgeHealth, setBridgeHealth] = useState<BridgeHealth | null>(null);
+  const [manualMode, setManualMode] = useState(false);
+  const [manualTitle, setManualTitle] = useState('');
+  const [manualUrl, setManualUrl] = useState('');
+  const [manualText, setManualText] = useState('');
+  const manualContextRef = useRef<{ url: string; title: string; text: string }>({ url: '', title: '', text: '' });
+  const autoSyncTimerRef = useRef<number | null>(null);
 
   const loadSeqRef = useRef(0);
   const tabIdRef = useRef<number | null>(null);
@@ -138,14 +151,32 @@ export default function App() {
     await saveRecord(next);
   }, []);
 
+  const queueAutoSync = useCallback(
+    async (next: StudyRecord) => {
+      if (!settings?.documents.autoSync) return;
+      try {
+        await sendRuntimeMessage({ type: 'PS_ENQUEUE_SYNC', recordId: next.id });
+      } catch {
+        // 自动同步失败不阻断本地保存；启动时还有补传队列。
+      }
+    },
+    [settings?.documents.autoSync],
+  );
+
   const patchRecord = useCallback(
     (patch: Partial<StudyRecord>) => {
       const current = recordRef.current;
       if (!current) return;
       const next = { ...current, ...patch, updatedAt: Date.now() };
       void persistRecord(next);
+      // 笔记/标签连续输入时不要每个按键都排队；停顿后自动同步一次。
+      if (autoSyncTimerRef.current !== null) window.clearTimeout(autoSyncTimerRef.current);
+      autoSyncTimerRef.current = window.setTimeout(() => {
+        autoSyncTimerRef.current = null;
+        void queueAutoSync(next);
+      }, 2500);
     },
-    [persistRecord],
+    [persistRecord, queueAutoSync],
   );
 
   const loadSettings = useCallback(async () => {
@@ -171,50 +202,108 @@ export default function App() {
       const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
       targetTab = requestedTabId ? tabs.find((item) => item.id === requestedTabId) ?? tabs[0] : tabs[0];
       if (!targetTab?.id) throw new Error('没有找到当前标签页。');
-      if (targetTab.url && !/^https?:\/\//.test(targetTab.url)) {
-        throw new Error('请在普通网页中使用 PageStudy；浏览器内置页面不支持读取正文。');
-      }
       const nextTabId = targetTab.id;
       tabIdRef.current = nextTabId;
       setTabId(nextTabId);
+      const nextUrl = targetTab.url ?? '';
+      const nextTitle = targetTab.title ?? '';
+
+      const loadFoundRecord = async (found: StudyRecord | null, fallbackPage: PageContext | null) => {
+        if (found) {
+          recordRef.current = found;
+          setRecord(found);
+          setPage(found.page);
+          setManualMode(false);
+          messagesRef.current = found.messages;
+          setMessages(found.messages);
+          contextsRef.current = found.selections;
+          setContexts(found.selections);
+          if (fallbackPage && found.page.contentHash !== fallbackPage.contentHash) {
+            showNotice('网页内容与记录快照不一致；当前记录仍保留原快照。', 'info');
+          }
+        } else {
+          recordRef.current = null;
+          setRecord(null);
+          setPage(fallbackPage);
+          messagesRef.current = [];
+          setMessages([]);
+          contextsRef.current = [];
+          setContexts([]);
+        }
+        setSelection(null);
+      };
+
+      if (!nextUrl) {
+        // 某些浏览器内置页即使拿到标签页对象也不会暴露 URL；仍然允许按标题手动记录。
+        setPage(null);
+        setRecord(null);
+        recordRef.current = null;
+        setManualMode(true);
+        setManualTitle(nextTitle || '手动摘录');
+        setManualUrl('');
+        setManualText('');
+        setPageError('当前标签页的地址不可读取；请手动填写标题和摘录内容。');
+        setSideTab('record');
+        return;
+      }
+
+      // 浏览器内置页（chrome://、edge://、扩展页等）禁止内容脚本注入。
+      // 这里保留标签页信息，进入手动摘录模式，而不是把整个侧栏置空。
+      if (isRestrictedPageUrl(nextUrl)) {
+        const found = (await findRecordsByUrl(nextUrl)).sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
+        if (loadSeqRef.current !== seq) return;
+        await loadFoundRecord(found, null);
+        if (!found) {
+          const draft = manualContextRef.current;
+          const same = draft.url === nextUrl;
+          setManualMode(true);
+          setManualTitle(same ? draft.title : nextTitle || '手动摘录');
+          setManualUrl(nextUrl);
+          setManualText(same ? draft.text : '');
+          setPageError('当前是浏览器内置页面，无法自动读取正文；可以在下方手动摘录后记录。');
+          setSideTab('record');
+        }
+        return;
+      }
 
       let nextPage: PageContext | null = null;
+      let contentError = '';
       try {
         const response = await sendTabMessage<PageContextResponse>(nextTabId, { type: 'PS_GET_PAGE_CONTEXT' });
         if (response.ok && response.page) nextPage = response.page;
         else throw new Error(response.error ?? '页面内容读取失败');
       } catch (error) {
-        throw new Error(`无法读取页面正文：${asErrorMessage(error)}。请刷新网页或重新加载扩展后再试。`);
+        contentError = asErrorMessage(error);
       }
       if (loadSeqRef.current !== seq) return;
 
+      if (!nextPage) {
+        const found = (await findRecordsByUrl(nextUrl)).sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
+        if (loadSeqRef.current !== seq) return;
+        if (found) {
+          await loadFoundRecord(found, null);
+          setPageError(`无法重新读取网页正文：${contentError}。当前显示已保存的快照。`);
+        } else {
+          await loadFoundRecord(null, null);
+          setManualMode(true);
+          setManualTitle(nextTitle || '手动摘录');
+          setManualUrl(nextUrl);
+          setManualText('');
+          setPageError(`无法读取页面正文：${contentError}。可以刷新网页、重新加载扩展，或在下方手动摘录。`);
+          setSideTab('record');
+        }
+        return;
+      }
+
+      setManualMode(false);
       setPage(nextPage);
-      setContexts((current) => current.filter(Boolean));
       const found = await findRecordForPage(nextPage);
       if (loadSeqRef.current !== seq) return;
-
-      if (found) {
-        recordRef.current = found;
-        setRecord(found);
-        messagesRef.current = found.messages;
-        setMessages(found.messages);
-        contextsRef.current = found.selections;
-        setContexts(found.selections);
-        if (found.page.contentHash !== nextPage.contentHash) {
-          showNotice('网页内容与记录快照不一致；当前记录仍保留原快照。', 'info');
-        }
-      } else {
-        recordRef.current = null;
-        setRecord(null);
-        messagesRef.current = [];
-        setMessages([]);
-        contextsRef.current = [];
-        setContexts([]);
-      }
-      setSelection(null);
+      await loadFoundRecord(found, nextPage);
     } catch (error) {
       if (loadSeqRef.current !== seq) return;
       setPage(null);
+      setManualMode(false);
       setRecord(null);
       recordRef.current = null;
       setPageError(asErrorMessage(error));
@@ -242,6 +331,20 @@ export default function App() {
   }, [loadSettings, loadTab]);
 
   useEffect(() => {
+    if (settings) setDocTarget(settings.documents.defaultTarget);
+  }, [settings?.documents.defaultTarget]);
+
+  useEffect(() => {
+    return () => {
+      if (autoSyncTimerRef.current !== null) window.clearTimeout(autoSyncTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    manualContextRef.current = { url: manualUrl, title: manualTitle, text: manualText };
+  }, [manualUrl, manualTitle, manualText]);
+
+  useEffect(() => {
     const onActivated = () => void loadTab();
     const onUpdated = (updatedTabId: number, changeInfo: chrome.tabs.TabChangeInfo) => {
       if (updatedTabId === tabIdRef.current && changeInfo.status === 'complete') {
@@ -261,7 +364,7 @@ export default function App() {
   }, [contexts]);
 
   useEffect(() => {
-    if (tabId === null || !page) return;
+    if (tabId === null || !page || page.manual) return;
     let cancelled = false;
     const poll = async () => {
       try {
@@ -450,17 +553,26 @@ export default function App() {
     syncMessagesToRecord();
   };
 
-  const capturePage = async (): Promise<StudyRecord | null> => {
-    if (!page || tabId === null) {
-      showNotice('当前页面还没有可记录的大纲。', 'error');
+  const buildManualContext = (): PageContext | null => {
+    const title = manualTitle.trim() || manualUrl.trim() || '手动摘录';
+    if (!manualText.trim() && !manualTitle.trim()) return null;
+    return createManualPage({ url: manualUrl, title, text: manualText });
+  };
+
+  const capturePage = async (manualOverride?: PageContext | null): Promise<StudyRecord | null> => {
+    let freshPage = manualOverride ?? page;
+    if (!freshPage && manualMode) freshPage = buildManualContext();
+    if (!freshPage || tabId === null) {
+      showNotice('当前页面还没有可记录的内容。', 'error');
       return null;
     }
-    let freshPage = page;
-    try {
-      const response = await sendTabMessage<PageContextResponse>(tabId, { type: 'PS_GET_PAGE_CONTEXT' });
-      if (response.ok && response.page) freshPage = response.page;
-    } catch {
-      // 沿用上一次读取到的大纲，避免因页面短暂失联导致记录失败。
+    if (!freshPage.manual) {
+      try {
+        const response = await sendTabMessage<PageContextResponse>(tabId, { type: 'PS_GET_PAGE_CONTEXT' });
+        if (response.ok && response.page) freshPage = response.page;
+      } catch {
+        // 沿用上一次读取到的大纲，避免因页面短暂失联导致记录失败。
+      }
     }
     setPage(freshPage);
     const existing = recordRef.current;
@@ -481,7 +593,8 @@ export default function App() {
     };
     await persistRecord(next);
     setSideTab('record');
-    showNotice(isSameContent ? '记录已更新。' : '本页已记录，正在整理大纲。', 'success');
+    void queueAutoSync(next);
+    showNotice(isSameContent ? '记录已更新。' : '本页已记录。', 'success');
     return next;
   };
 
@@ -514,6 +627,7 @@ export default function App() {
         updatedAt: Date.now(),
       };
       await persistRecord(next);
+      void queueAutoSync(next);
       showNotice('总结已保存。', 'success');
     } catch (error) {
       const next: StudyRecord = {
@@ -530,7 +644,12 @@ export default function App() {
   };
 
   const recordPage = async (withSummary: boolean) => {
-    const next = await capturePage();
+    const manual = manualMode ? buildManualContext() : null;
+    if (manualMode && !manual) {
+      showNotice('请先填写标题，或粘贴一段要记录的正文。', 'error');
+      return;
+    }
+    const next = await capturePage(manual);
     if (next && withSummary) await summarizeRecord(next);
   };
 
@@ -547,9 +666,11 @@ export default function App() {
     void chrome.runtime.openOptionsPage();
   };
 
-  const openDashboard = () => {
-    void chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
+  const openDashboard = (hash = '') => {
+    void chrome.tabs.create({ url: chrome.runtime.getURL(`dashboard.html${hash}`) });
   };
+
+  const openWiki = () => openDashboard('#wiki');
 
   const jumpToAnchor = (anchor: string) => {
     if (!anchor || tabId === null) return;
@@ -589,75 +710,97 @@ export default function App() {
       const health: BridgeHealth = {
         ok: Boolean(response.ok),
         larkCli: Boolean(response.larkCli),
+        notion: Boolean(response.notion),
+        markdown: Boolean(response.markdown),
+        markdownDir: response.markdownDir,
         version: response.version,
+        syncPending: response.syncPending,
+        syncError: response.syncError,
         error: response.error,
       };
       setBridgeHealth(health);
       return health;
     } catch (error) {
-      const health = { ok: false, larkCli: false, error: asErrorMessage(error) };
+      const health: BridgeHealth = { ok: false, larkCli: false, notion: false, markdown: false, error: asErrorMessage(error) };
       setBridgeHealth(health);
       return health;
     }
   };
 
-  const writeFeishu = async (mode: 'create' | 'append' = 'create') => {
-    if (!record) return;
-    if (!settings?.feishu.url) {
-      showNotice('请先在设置页配置飞书桥接服务地址。', 'error');
-      return;
-    }
-    if (mode === 'create' && !record.summary) {
-      showNotice('请先生成总结，再写入飞书。', 'info');
-      setSideTab('record');
-      return;
-    }
-    if (mode === 'append' && !record.feishu?.documentId) {
-      showNotice('还没有已写入的飞书文档，请先创建。', 'info');
-      return;
-    }
-    setFeishuLoading(true);
+  const refreshRecordSync = async () => {
+    const current = recordRef.current;
+    if (!current) return;
     try {
-      const health = await checkBridge();
-      if (!health?.ok || !health.larkCli) {
-        throw new Error(health?.error ?? '飞书桥接服务未运行，请先在项目目录运行 npm run bridge。');
-      }
-      const response =
-        mode === 'append'
-          ? await sendRuntimeMessage<FeishuWriteResponse>({
-              type: 'PS_APPEND_FEISHU',
-              documentId: record.feishu?.documentId ?? '',
-              markdown: recordToFeishuAppendMarkdown(record),
-            })
-          : await sendRuntimeMessage<FeishuWriteResponse>({
-              type: 'PS_WRITE_FEISHU',
-              title: recordToFeishuTitle(record),
-              markdown: recordToMarkdown(record),
-            });
-      if (!response.ok) throw new Error(response.error ?? '飞书写入失败');
+      const fresh = await getRecord(current.id);
+      if (!fresh) return;
       const next: StudyRecord = {
-        ...record,
-        feishu: {
-          url: response.url ?? record.feishu?.url ?? '',
-          documentId: response.documentId ?? record.feishu?.documentId ?? '',
-          writtenAt: Date.now(),
-        },
-        updatedAt: Date.now(),
+        ...current,
+        feishu: fresh.feishu ?? current.feishu,
+        documents: fresh.documents,
+        sync: fresh.sync,
       };
       await persistRecord(next);
-      showNotice(mode === 'append' ? '已追加到飞书文档。' : '已写入飞书文档。', 'success');
-      // 不自动打开飞书标签页：那会让侧栏切换到新标签并丢失当前网页上下文。
-      // 文档链接显示在记录卡片里，用户需要时再点击。
+      showNotice('已刷新文档同步状态。', 'success');
+    } catch (error) {
+      showNotice(asErrorMessage(error), 'error');
+    }
+  };
+
+  const writeDocument = async (target: DocumentTarget, mode: DocumentWriteMode = 'auto') => {
+    const current = recordRef.current;
+    if (!current) return;
+    if (!settings?.feishu.url) {
+      showNotice('请先在设置页配置本地文档桥接服务地址。', 'error');
+      return;
+    }
+    if (mode === 'append' && !getDocumentRef(current, target)) {
+      showNotice('还没有已写入该平台的文档，请先创建。', 'info');
+      return;
+    }
+    // 手动写入与“停顿后自动同步”可能并发；先取消尚未触发的自动任务，避免重复追加。
+    if (autoSyncTimerRef.current !== null) {
+      window.clearTimeout(autoSyncTimerRef.current);
+      autoSyncTimerRef.current = null;
+    }
+    setDocLoading(true);
+    try {
+      const health = await checkBridge();
+      if (!health?.ok) throw new Error(health?.error ?? '本地文档桥接服务未运行，请先运行 npm run bridge。');
+      if (target === 'feishu' && !health.larkCli) throw new Error('飞书 CLI 未就绪，请检查 lark-cli 登录状态。');
+      if (target === 'notion' && !health.notion) throw new Error('Notion 未配置，请先在桥接环境变量中设置 NOTION_TOKEN。');
+      if (target === 'markdown' && !health.markdown) {
+        throw new Error('本地 Markdown 未配置，请先设置 PAGESTUDY_MARKDOWN_DIR。');
+      }
+      const response = await writeRecordToDocument(current, target, mode);
+      if (!response.ok || !response.documentId) {
+        throw new Error(response.error ?? `${DOCUMENT_TARGET_LABELS[target]}写入失败`);
+      }
+      const next = withDocumentRef(current, {
+        target,
+        documentId: response.documentId,
+        url: response.url ?? '',
+        writtenAt: Date.now(),
+        title: current.page.title,
+      });
+      await persistRecord(next);
+      showNotice(mode === 'append' ? `已追加到${DOCUMENT_TARGET_SHORT_LABELS[target]}。` : `已写入${DOCUMENT_TARGET_SHORT_LABELS[target]}。`, 'success');
+      // 不自动打开外部文档标签页：切换标签会丢失侧栏的当前网页上下文。
     } catch (error) {
       showNotice(asErrorMessage(error), 'error');
     } finally {
-      setFeishuLoading(false);
+      setDocLoading(false);
     }
   };
 
   const openSource = () => {
     if (!record) return;
-    void chrome.tabs.create({ url: record.page.url });
+    if (!record.page.url) {
+      showNotice('这条手动摘录没有填写地址。', 'info');
+      return;
+    }
+    void chrome.tabs.create({ url: record.page.url }).catch((error) => {
+      showNotice(`无法打开原文：${asErrorMessage(error)}`, 'error');
+    });
   };
 
   const addTag = () => {
@@ -702,7 +845,7 @@ export default function App() {
           </div>
         </div>
         <div className="topbar-actions">
-          <button type="button" className="icon-button" onClick={openDashboard} title="打开记录库">
+          <button type="button" className="icon-button" onClick={() => openDashboard()} title="打开记录库">
             库
           </button>
           <button type="button" className="icon-button" onClick={openOptions} title="设置">
@@ -720,7 +863,7 @@ export default function App() {
         ) : page ? (
           <>
             <div className="page-card-kicker">
-              {safeHostname(page.url)}
+              {page.manual ? '手动摘录' : safeHostname(page.url)}
               {page.author ? ` · ${page.author}` : ''}
               {page.publishedAt ? ` · ${page.publishedAt.slice(0, 10)}` : ''}
             </div>
@@ -731,12 +874,13 @@ export default function App() {
               <span>{flattenOutline(outline).length} 个标题</span>
               <span>{page.wordCount.toLocaleString()} 字</span>
               <span>约 {readingMinutes} 分钟</span>
+              {page.manual ? <span>手动摘录</span> : null}
               {record ? <span className="record-state">已记录</span> : null}
             </div>
           </>
         ) : (
           <div className="page-empty">
-            <strong>暂无可读取的网页</strong>
+            <strong>{manualMode ? '手动摘录模式' : '暂无可读取的网页'}</strong>
             <p>{pageError || '打开一篇博客文章，或刷新当前页面后重试。'}</p>
             <button type="button" className="text-button" onClick={openOptions}>
               检查设置
@@ -919,31 +1063,47 @@ export default function App() {
               summary={summary}
               outline={outline}
               summaryLoading={summaryLoading}
-              feishuLoading={feishuLoading}
+              docLoading={docLoading}
               bridgeHealth={bridgeHealth}
+              docTarget={docTarget}
+              setDocTarget={setDocTarget}
+              autoSync={Boolean(settings?.documents.autoSync)}
               tagInput={tagInput}
               setTagInput={setTagInput}
               onJump={jumpToAnchor}
               onOpenSource={openSource}
               onResummarize={resummarize}
-              onWriteFeishu={writeFeishu}
+              onWriteDocument={writeDocument}
+              onRefreshSync={refreshRecordSync}
               onCopyMarkdown={copyMarkdown}
               onDownloadMarkdown={downloadMarkdown}
               onDelete={deleteCurrentRecord}
               onNotesChange={(notes) => patchRecord({ notes })}
               onAddTag={addTag}
               onRemoveTag={removeTag}
-              onOpenDashboard={openDashboard}
+              onOpenDashboard={() => openDashboard()}
+              onOpenWiki={openWiki}
               onOpenOptions={openOptions}
             />
           ) : (
             <div className="record-empty">
               <div className="record-empty-icon">▤</div>
-              <h2>记录本页，形成学习档案</h2>
+              <h2>{manualMode ? '手动摘录浏览器内置页' : '记录本页，形成学习档案'}</h2>
               <p>
-                点击后先保存网页链接、大纲和当前对话，再按大纲生成逐节总结。网页以后变化，记录仍保留当时的快照。
+                {manualMode
+                  ? '浏览器内置页面不能被扩展自动读取。把标题、地址和要学习的段落粘贴到下面，PageStudy 仍会保存记录、生成总结并归入 Wiki。'
+                  : '点击后先保存网页链接、大纲和当前对话，再按大纲生成逐节总结。网页以后变化，记录仍保留当时的快照。'}
               </p>
-              {outline.length > 0 ? (
+              {manualMode ? (
+                <ManualCaptureFields
+                  title={manualTitle}
+                  url={manualUrl}
+                  text={manualText}
+                  onTitleChange={setManualTitle}
+                  onUrlChange={setManualUrl}
+                  onTextChange={setManualText}
+                />
+              ) : outline.length > 0 ? (
                 <div className="outline-preview">
                   <div className="section-heading">
                     <span>网页大纲</span>
@@ -955,7 +1115,7 @@ export default function App() {
               ) : null}
               <div className="record-actions">
                 <button type="button" className="primary-button" onClick={() => void recordPage(true)}>
-                  记录并总结
+                  {manualMode ? '记录摘录并总结' : '记录并总结'}
                 </button>
                 <button type="button" className="secondary-button" onClick={() => void recordPage(false)}>
                   仅记录
@@ -977,14 +1137,18 @@ interface RecordViewProps {
   summary: PageSummary | null;
   outline: PageContext['outline'];
   summaryLoading: boolean;
-  feishuLoading: boolean;
+  docLoading: boolean;
   bridgeHealth: BridgeHealth | null;
+  docTarget: DocumentTarget;
+  setDocTarget: (target: DocumentTarget) => void;
+  autoSync: boolean;
   tagInput: string;
   setTagInput: (value: string) => void;
   onJump: (anchor: string) => void;
   onOpenSource: () => void;
   onResummarize: () => void;
-  onWriteFeishu: (mode: 'create' | 'append') => void;
+  onWriteDocument: (target: DocumentTarget, mode: DocumentWriteMode) => void;
+  onRefreshSync: () => void;
   onCopyMarkdown: () => void;
   onDownloadMarkdown: () => void;
   onDelete: () => void;
@@ -992,6 +1156,7 @@ interface RecordViewProps {
   onAddTag: () => void;
   onRemoveTag: (tag: string) => void;
   onOpenDashboard: () => void;
+  onOpenWiki: () => void;
   onOpenOptions: () => void;
 }
 
@@ -1000,14 +1165,18 @@ function RecordView({
   summary,
   outline,
   summaryLoading,
-  feishuLoading,
+  docLoading,
   bridgeHealth,
+  docTarget,
+  setDocTarget,
+  autoSync,
   tagInput,
   setTagInput,
   onJump,
   onOpenSource,
   onResummarize,
-  onWriteFeishu,
+  onWriteDocument,
+  onRefreshSync,
   onCopyMarkdown,
   onDownloadMarkdown,
   onDelete,
@@ -1015,8 +1184,16 @@ function RecordView({
   onAddTag,
   onRemoveTag,
   onOpenDashboard,
+  onOpenWiki,
   onOpenOptions,
 }: RecordViewProps) {
+  const activeRef = getDocumentRef(record, docTarget);
+  const targetReady =
+    docTarget === 'feishu'
+      ? Boolean(bridgeHealth?.larkCli)
+      : docTarget === 'notion'
+        ? Boolean(bridgeHealth?.notion)
+        : Boolean(bridgeHealth?.markdown);
   const statusText =
     record.status === 'ready'
       ? '已总结'
@@ -1029,10 +1206,16 @@ function RecordView({
         <div>
           <span className={`status-pill status-${record.status}`}>{statusText}</span>
           <span className="record-time">记录于 {formatDate(record.createdAt)}</span>
+          {record.page.manual ? <span className="manual-badge">手动摘录</span> : null}
         </div>
-        <button type="button" className="text-button" onClick={onOpenSource}>
-          打开原文
-        </button>
+        <div className="record-head-actions">
+          <button type="button" className="text-button" onClick={onOpenWiki}>
+            Wiki
+          </button>
+          <button type="button" className="text-button" onClick={onOpenSource}>
+            打开原文
+          </button>
+        </div>
       </div>
 
       {record.error ? <div className="error-box">{record.error}</div> : null}
@@ -1046,39 +1229,88 @@ function RecordView({
         >
           {summaryLoading ? '总结中…' : summary ? '重新总结' : '生成总结'}
         </button>
-        {record.feishu?.documentId ? (
-          <>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => onWriteFeishu('append')}
-              disabled={feishuLoading}
-              title="把最新笔记和总结追加到已有飞书文档"
+        <button type="button" className="secondary-button" onClick={onOpenDashboard}>
+          记录库
+        </button>
+      </div>
+
+      <section className="document-panel">
+        <div className="document-panel-head">
+          <div>
+            <strong>保存到文档</strong>
+            <span className="muted">{autoSync ? '保存后自动同步已开启' : '自动同步未开启'}</span>
+          </div>
+          <div className="document-panel-controls">
+            <select
+              aria-label="文档目标"
+              value={docTarget}
+              onChange={(event) => setDocTarget(event.target.value as DocumentTarget)}
+              disabled={docLoading}
             >
-              {feishuLoading ? '写入中…' : '追加到飞书'}
+              {DOCUMENT_TARGETS.map((target) => (
+                <option value={target} key={target}>
+                  {DOCUMENT_TARGET_LABELS[target]}
+                </option>
+              ))}
+            </select>
+            <button type="button" className="text-button" onClick={onRefreshSync} disabled={docLoading}>
+              刷新状态
             </button>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => onWriteFeishu('create')}
-              disabled={feishuLoading || !summary}
-              title={!summary ? '请先生成总结' : '创建一份新的飞书文档'}
-            >
-              新建文档
-            </button>
-          </>
-        ) : (
+          </div>
+        </div>
+        <div className="document-buttons">
           <button
             type="button"
             className="secondary-button"
-            onClick={() => onWriteFeishu('create')}
-            disabled={feishuLoading || !summary}
-            title={!summary ? '请先生成总结' : '通过本地桥接写入飞书'}
+            onClick={() => onWriteDocument(docTarget, activeRef ? 'append' : 'create')}
+            disabled={docLoading}
+            title={targetReady ? undefined : '桥接尚未就绪，点击后会先检查服务状态'}
           >
-            {feishuLoading ? '写入中…' : '写入飞书'}
+            {docLoading
+              ? '写入中…'
+              : `${activeRef ? '追加到' : '写入'}${DOCUMENT_TARGET_SHORT_LABELS[docTarget]}`}
           </button>
-        )}
-      </div>
+          {activeRef ? (
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => onWriteDocument(docTarget, 'create')}
+              disabled={docLoading}
+              title="为当前记录再创建一份新文档"
+            >
+              新建一份
+            </button>
+          ) : null}
+        </div>
+        <div className="document-refs">
+          {DOCUMENT_TARGETS.map((target) => {
+            const ref = getDocumentRef(record, target);
+            if (!ref) return null;
+            const sync = record.sync?.[target];
+            return (
+              <div className="document-ref" key={target}>
+                <span className="document-ref-label">{DOCUMENT_TARGET_SHORT_LABELS[target]}</span>
+                {ref.url ? (
+                  <a href={ref.url} target="_blank" rel="noreferrer" title={ref.documentId}>
+                    打开文档
+                  </a>
+                ) : (
+                  <span className="document-path" title={ref.documentId}>
+                    {ref.documentId}
+                  </span>
+                )}
+                {sync ? <span className={`sync-state sync-${sync.status}`}>{syncStateText(sync)}</span> : null}
+              </div>
+            );
+          })}
+          {DOCUMENT_TARGETS.every((target) => !getDocumentRef(record, target)) ? (
+            <span className="muted">尚未写入文档。配置桥接后可以手动写入，或开启自动同步。</span>
+          ) : null}
+        </div>
+        {bridgeHealth && !bridgeHealth.ok ? (
+          <p className="muted">桥接未连接：{bridgeHealth.error ?? '请先运行 npm run bridge'}</p>
+        ) : null}
+      </section>
 
       {summary ? (
         <section className="record-section">
@@ -1208,28 +1440,20 @@ function RecordView({
           <button type="button" className="secondary-button" onClick={onOpenDashboard}>
             打开记录库
           </button>
+          <button type="button" className="secondary-button" onClick={onOpenWiki}>
+            打开 Wiki
+          </button>
           <button type="button" className="secondary-button" onClick={onOpenOptions}>
-            飞书设置
+            文档与同步设置
           </button>
         </div>
-        {record.feishu ? (
-          <p className="feishu-result">
-            已写入飞书：
-            {record.feishu.url ? (
-              <a href={record.feishu.url} target="_blank" rel="noreferrer">
-                {record.feishu.url}
-              </a>
-            ) : (
-              record.feishu.documentId
-            )}
-          </p>
-        ) : (
-          <p className="muted bridge-hint">
-            {bridgeHealth?.ok && bridgeHealth.larkCli
-              ? '飞书桥接已连接；点击“写入飞书”创建新文档。'
-              : '需要本地桥接服务复用现有飞书 CLI；在项目目录运行 npm run bridge。'}
-          </p>
-        )}
+        <p className="muted bridge-hint">
+          {bridgeHealth?.ok
+            ? `本地桥接已连接：飞书 ${bridgeHealth.larkCli ? '就绪' : '未就绪'} · Notion ${
+                bridgeHealth.notion ? '就绪' : '未配置'
+              } · 本地 Markdown ${bridgeHealth.markdown ? '就绪' : '未配置'}`
+            : '需要本地桥接服务：在项目目录运行 npm run bridge。'}
+        </p>
       </section>
 
       <div className="danger-row">
@@ -1237,6 +1461,57 @@ function RecordView({
           删除这条记录
         </button>
       </div>
+    </div>
+  );
+}
+
+interface ManualCaptureFieldsProps {
+  title: string;
+  url: string;
+  text: string;
+  onTitleChange: (value: string) => void;
+  onUrlChange: (value: string) => void;
+  onTextChange: (value: string) => void;
+}
+
+function ManualCaptureFields({
+  title,
+  url,
+  text,
+  onTitleChange,
+  onUrlChange,
+  onTextChange,
+}: ManualCaptureFieldsProps) {
+  return (
+    <div className="manual-capture">
+      <label>
+        <span>标题</span>
+        <input
+          value={title}
+          onChange={(event) => onTitleChange(event.target.value)}
+          placeholder="例如：浏览器设置页 / 扩展管理页"
+        />
+      </label>
+      <label>
+        <span>地址（可留空）</span>
+        <input
+          value={url}
+          onChange={(event) => onUrlChange(event.target.value)}
+          placeholder="chrome://settings 或 edge://extensions"
+        />
+      </label>
+      <label>
+        <span>摘录正文</span>
+        <textarea
+          value={text}
+          onChange={(event) => onTextChange(event.target.value)}
+          placeholder="粘贴页面文字。没有正文也可以只保存标题和链接，稍后手动补充笔记。"
+          rows={8}
+        />
+      </label>
+      <p className="muted">
+        手动摘录不会伪装成自动读取；记录会标记为“手动摘录”，并照常进入总结、文档同步和本地 Wiki。
+      </p>
     </div>
   );
 }

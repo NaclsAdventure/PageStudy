@@ -1,8 +1,10 @@
 import type { ProviderId, ProviderConfig, Settings, Skill } from './types';
 
 export const APP_NAME = 'PageStudy';
-export const APP_VERSION = '0.1.0';
+export const APP_VERSION = '0.2.0';
 export const SETTINGS_KEY = 'pagestudy.settings.v1';
+export const SYNC_QUEUE_KEY = 'pagestudy.sync.queue.v1';
+export const SYNC_ALARM = 'pagestudy-sync';
 export const MAX_PAGE_CHARS = 60000;
 export const MAX_SECTION_CHARS = 5000;
 
@@ -98,6 +100,60 @@ export const DEFAULT_SKILLS: Skill[] = [
     prompt:
       '你是一位学习卡片设计师。请基于选中段落生成 3–6 张问答卡片，问题要能检验理解而不是死记硬背；答案简洁，并在必要处引用原文。最后列出 1–2 个仍需读者自己验证的问题。',
   },
+  {
+    id: 'feynman',
+    name: '费曼讲解',
+    description: '用自己的话讲清楚，暴露理解断点。',
+    builtin: true,
+    sourceUrl: 'https://github.com/toddward/the-learning-skill',
+    prompt:
+      '你是一位费曼学习法教练。先要求读者用自己的话复述选中内容，再检查复述中的模糊词、跳跃和未解释的术语。用更简单的类比重讲一遍，最后给出 2–3 个能暴露理解断点的问题。不要把“读懂了”当作“讲清楚了”；读者没有讲清楚的地方要明确指出。',
+  },
+  {
+    id: 'socratic',
+    name: '苏格拉底追问',
+    description: '不急着给答案，用问题逼近假设与边界。',
+    builtin: true,
+    sourceUrl: 'https://github.com/anthropics/skills',
+    prompt:
+      '你是一位苏格拉底式阅读教练。不要一开始就给结论，而是基于选中段落提出 1 个最关键的问题，等待读者回答；根据回答继续追问证据、隐含假设、反例和适用边界。每轮只推进一小步，问题要具体到原文，不要连续抛出清单。',
+  },
+  {
+    id: 'cornell',
+    name: '康奈尔笔记',
+    description: '把段落整理成线索、笔记、总结三栏。',
+    builtin: true,
+    sourceUrl: 'https://lsc.cornell.edu/how-to-study/taking-notes/cornell-note-taking-system/',
+    prompt:
+      '你是一位康奈尔笔记教练。把选中内容整理为三部分：左侧“线索”写 3–5 个能触发回忆的问题或关键词；右侧“笔记”用简短要点记录论据、例子和定义；底部“总结”用 2–3 句话概括这一节。笔记要基于原文，不要补写作者没有说过的结论。',
+  },
+  {
+    id: 'active-recall',
+    name: '主动回忆',
+    description: '生成闭卷检索题和间隔复习安排。',
+    builtin: true,
+    sourceUrl: 'https://github.com/toddward/the-learning-skill',
+    prompt:
+      '你是一位主动回忆教练。基于选中段落设计 4–6 道闭卷检索题，覆盖定义、因果、例子和易混点；先只给问题，附上简短评分要点，不要直接展示完整答案。最后给出一个轻量的间隔复习安排（今天、3 天后、7 天后），并提醒读者先尝试回忆再看原文。',
+  },
+  {
+    id: 'zettelkasten',
+    name: '卡片笔记',
+    description: '把内容拆成原子笔记并寻找连接。',
+    builtin: true,
+    sourceUrl: 'https://zettelkasten.de/introduction/',
+    prompt:
+      '你是一位卡片笔记（Zettelkasten）教练。把选中内容拆成 2–4 张原子笔记：每张只表达一个观点，用自己的话写，保留原文出处；为每张笔记起一个可检索的标题，并指出它可能与哪些已有概念/标签连接。不要写成长篇摘要，也不要虚构不存在的链接。',
+  },
+  {
+    id: 'progressive-summary',
+    name: '渐进式总结',
+    description: '从原文到一句话，逐层压缩重点。',
+    builtin: true,
+    sourceUrl: 'https://fortelabs.com/blog/progressive-summarization-a-practical-technique-for-designing-discoverable-notes/',
+    prompt:
+      '你是一位渐进式总结教练。把选中内容压缩成三层：第一层保留关键原文句子；第二层提炼论点和证据；第三层用一句话说出“这段话为什么重要”。每层都要能独立阅读，并标出被压缩掉的信息类型。不要为了简短而丢掉限定条件和反例。',
+  },
 ];
 
 export function getDefaultSettings(): Settings {
@@ -116,6 +172,12 @@ export function getDefaultSettings(): Settings {
       url: 'http://127.0.0.1:17373',
       token: '',
       parentToken: '',
+    },
+    documents: {
+      autoSync: false,
+      defaultTarget: 'feishu',
+      notionParentPageId: '',
+      markdownDirectory: '',
     },
     customSkills: [],
   };
