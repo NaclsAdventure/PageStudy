@@ -1,5 +1,6 @@
 import type { DocumentTarget, DocumentWriteResult, StudyRecord } from './types';
 import { getDocumentRef } from './documents';
+import { recordToFeishuAppendXml, recordToFeishuXml } from './feishu-xml';
 import { recordToAppendMarkdown, recordToDocumentTitle, recordToMarkdown } from './markdown';
 import { sendRuntimeMessage, type DocumentWriteResponse } from './messages';
 
@@ -18,6 +19,7 @@ export async function writeRecordToDocument(
         target,
         documentId: existing?.documentId ?? '',
         markdown: recordToAppendMarkdown(record),
+        xml: target === 'feishu' ? recordToFeishuAppendXml(record) : undefined,
         recordId: record.id,
       })
     : await sendRuntimeMessage<DocumentWriteResponse>({
@@ -25,6 +27,7 @@ export async function writeRecordToDocument(
         target,
         title: recordToDocumentTitle(record),
         markdown: recordToMarkdown(record),
+        xml: target === 'feishu' ? recordToFeishuXml(record) : undefined,
         recordId: record.id,
       });
   return response;

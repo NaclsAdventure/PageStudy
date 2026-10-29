@@ -218,7 +218,12 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
           const settings = await loadSettings();
           const response: DocumentWriteResponse = await writeDocument(
             { bridge: settings.feishu, documents: settings.documents },
-            { target: message.target, title: message.title, markdown: message.markdown },
+            {
+              target: message.target,
+              title: message.title,
+              markdown: message.markdown,
+              xml: message.xml,
+            },
           );
           if (message.recordId) {
             try {
@@ -242,6 +247,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
               target: message.target,
               documentId: message.documentId,
               markdown: message.markdown,
+              xml: message.xml,
             },
           );
           if (message.recordId) {
@@ -258,7 +264,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
           const settings = await loadSettings();
           const response = await writeDocument(
             { bridge: settings.feishu, documents: settings.documents },
-            { target: 'feishu', title: message.title, markdown: message.markdown },
+            { target: 'feishu', title: message.title, markdown: message.markdown, xml: message.xml },
           );
           const legacy: FeishuWriteResponse = {
             ok: response.ok,
@@ -273,7 +279,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
           const settings = await loadSettings();
           const response = await appendDocument(
             { bridge: settings.feishu, documents: settings.documents },
-            { target: 'feishu', documentId: message.documentId, markdown: message.markdown },
+            { target: 'feishu', documentId: message.documentId, markdown: message.markdown, xml: message.xml },
           );
           const legacy: FeishuWriteResponse = {
             ok: response.ok,

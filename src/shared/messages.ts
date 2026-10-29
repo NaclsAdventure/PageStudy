@@ -27,10 +27,10 @@ export type RuntimeMessage =
   | { type: 'PS_TEST_PROVIDER' }
   | { type: 'PS_SUMMARIZE'; request: SummaryRequest }
   | { type: 'PS_BRIDGE_HEALTH' }
-  | { type: 'PS_WRITE_DOCUMENT'; target: DocumentTarget; title: string; markdown: string; recordId?: string }
-  | { type: 'PS_APPEND_DOCUMENT'; target: DocumentTarget; documentId: string; markdown: string; recordId?: string }
-  | { type: 'PS_WRITE_FEISHU'; title: string; markdown: string; parentToken?: string }
-  | { type: 'PS_APPEND_FEISHU'; documentId: string; markdown: string }
+  | { type: 'PS_WRITE_DOCUMENT'; target: DocumentTarget; title: string; markdown: string; xml?: string; recordId?: string }
+  | { type: 'PS_APPEND_DOCUMENT'; target: DocumentTarget; documentId: string; markdown: string; xml?: string; recordId?: string }
+  | { type: 'PS_WRITE_FEISHU'; title: string; markdown: string; xml?: string; parentToken?: string }
+  | { type: 'PS_APPEND_FEISHU'; documentId: string; markdown: string; xml?: string }
   | { type: 'PS_ENQUEUE_SYNC'; recordId: string; target?: DocumentTarget }
   | { type: 'PS_FLUSH_SYNC' }
   | { type: 'PS_PUBLISH_WIKI' }

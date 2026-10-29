@@ -288,7 +288,11 @@ export default function DashboardApp() {
           title: selected.page.title,
         }),
       );
-      flash(mode === 'append' ? '已追加到文档。' : '已写入文档。');
+      flash(
+        `${mode === 'append' ? '已追加到文档。' : '已写入文档。'}${
+          response.warnings?.length ? ` ${response.warnings.slice(0, 2).join('；')}` : ''
+        }`,
+      );
       if (mode === 'create' && response.url) void chrome.tabs.create({ url: response.url });
     } catch (error) {
       flash(asErrorMessage(error), true);

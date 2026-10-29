@@ -17,12 +17,14 @@ interface WriteInput {
   target: DocumentTarget;
   title: string;
   markdown: string;
+  xml?: string;
 }
 
 interface AppendInput {
   target: DocumentTarget;
   documentId: string;
   markdown: string;
+  xml?: string;
 }
 
 function createPath(target: DocumentTarget): string {
@@ -41,6 +43,21 @@ function targetError(target: DocumentTarget, error: unknown): string {
   return `${DOCUMENT_TARGET_LABELS[target]}：${asErrorMessage(error)}`;
 }
 
+function normalizeWarnings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === 'string') return item.trim();
+      if (item && typeof item === 'object') {
+        const record = item as Record<string, unknown>;
+        return String(record.message ?? record.msg ?? record.error ?? '').trim();
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
 export async function writeDocument(
   context: DocumentContext,
   input: WriteInput,
@@ -50,6 +67,7 @@ export async function writeDocument(
       title: input.title,
       markdown: input.markdown,
     };
+    if (input.xml) body.xml = input.xml;
     if (input.target === 'feishu') body.parentToken = context.bridge.parentToken;
     if (input.target === 'notion') body.parentPageId = context.documents.notionParentPageId;
     if (input.target === 'markdown') body.directory = context.documents.markdownDirectory;
@@ -76,6 +94,7 @@ export async function writeDocument(
       documentId,
       url: data.url ?? '',
       path: data.path,
+      warnings: normalizeWarnings(data.warnings),
     };
   } catch (error) {
     return { ok: false, target: input.target, error: targetError(input.target, error) };
@@ -93,7 +112,7 @@ export async function appendDocument(
       : appendPath(input.target).replace('__ID__', encodeURIComponent(input.documentId));
     const body = isMarkdown
       ? { documentId: input.documentId, path: input.documentId, markdown: input.markdown }
-      : { markdown: input.markdown };
+      : { markdown: input.markdown, ...(input.xml ? { xml: input.xml } : {}) };
     const response = await fetchBridge(context.bridge, path, {
       method: 'POST',
       body: JSON.stringify(body),
@@ -112,6 +131,7 @@ export async function appendDocument(
       documentId: data.documentId || input.documentId,
       url: data.url ?? '',
       path: data.path,
+      warnings: normalizeWarnings(data.warnings),
     };
   } catch (error) {
     return { ok: false, target: input.target, error: targetError(input.target, error) };

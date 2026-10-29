@@ -6,7 +6,7 @@
 Chrome/Edge 扩展
   └─ 后台 Service Worker
        └─ http://127.0.0.1:17373
-            ├─ lark-cli docs +create / docs +update → 飞书云文档
+            ├─ lark-cli docs +create / docs +update → 飞书原生 XML 块 + 图片上传
             ├─ lark-cli wiki +node-create / +node-list → 飞书个人文档库 Wiki
             ├─ Notion REST API → Notion 页面
             └─ 本地 .md 文件 → Obsidian / Logseq
@@ -95,27 +95,34 @@ npm run bridge
 
 ### `POST /api/feishu/docs`
 
-创建飞书文档：
+创建飞书文档。推荐传 `xml`，桥接会使用 `--doc-format xml` 写入原生标题、正文、图片和 callout；`markdown` 保留为旧扩展或降级兼容：
 
 ```json
 {
   "title": "学习记录 · 文章标题 · 10/28",
+  "xml": "<title>学习记录 · 文章标题 · 10/28</title>\n<callout ...>...</callout>\n<h2>30 秒速读</h2>...",
   "markdown": "# 文章标题\n\n...",
   "parentToken": "可选：文件夹 token 或知识库节点 token"
 }
 ```
 
+`xml` 中的 `<img href="https://..."/>` 会由 lark-cli 下载并上传为飞书图片块；正文写入成功后才会并发上传图片，上传失败的占位块会被清理，并通过 `warnings` 返回。
+
 ### `POST /api/feishu/docs/:documentId/append`
 
-追加飞书文档 Markdown：
+在文档末尾追加 XML 或 Markdown：
 
 ```json
-{ "markdown": "## 追加更新\n\n..." }
+{
+  "xml": "<h2>追加更新 · 10/28</h2><h3>我的判断</h3><p>...</p>",
+  "markdown": "## 追加更新\n\n..."
+}
 ```
 
 飞书相关接口需要 `lark-cli` 已登录，并且 scope 至少包含：
 
 - `docx:document:create`、`docx:document:write_only`
+- `drive:file:upload`（正文含远程图片时）
 - `wiki:wiki`、`wiki:wiki:readonly`、`wiki:space:read`
 - `wiki:node:create`、`wiki:node:retrieve`、`wiki:node:read`
 
@@ -258,6 +265,7 @@ npm run bridge
 - 父节点 token、文档 token、Wiki 节点 token 和页面 ID 都会做字符格式校验。
 - Notion Token 只从环境变量读取，不返回给扩展，也不写日志。
 - 本地文件路径会解析后校验是否位于配置根目录内，拒绝绝对路径和 `..` 越界。
+- 飞书 XML 只接受图片的远程 http(s) 地址，拒绝 `<img path>`、`<source>`、`<whiteboard>` 等本地资源或扩展标签，避免桥接变成读取本机文件的通道。
 - 写入动作由扩展侧用户点击或用户启用的自动同步触发，模型不能自行发布。
-- 飞书临时 Markdown 文件在请求结束后删除。
+- 飞书临时 XML / Markdown 文件在请求结束后删除。
 - Wiki 发布只操作当前用户个人文档库中由映射记录的节点；不会遍历或修改其他个人文档。

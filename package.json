@@ -1,7 +1,7 @@
 {
   "name": "pagestudy",
   "private": true,
-  "version": "0.4.2",
+  "version": "0.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,6 +10,7 @@
     "test": "vitest run",
     "bridge": "node bridge/lark-bridge.mjs",
     "verify:bridge": "node scripts/verify-bridge.mjs",
+    "verify:feishu": "node scripts/verify-feishu.mjs",
     "verify:wiki": "node scripts/verify-wiki.mjs"
   },
   "dependencies": {

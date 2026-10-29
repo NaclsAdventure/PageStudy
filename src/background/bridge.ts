@@ -13,6 +13,7 @@ interface BridgeHealthPayload {
   notion?: boolean;
   markdown?: boolean;
   markdownDir?: string;
+  warnings?: unknown;
 }
 
 export function bridgeBase(config: BridgeConfig): string {

@@ -5,6 +5,7 @@ import {
   withDocumentSyncState,
 } from '../shared/documents';
 import { getRecord, saveRecord } from '../shared/db';
+import { recordToFeishuAppendXml, recordToFeishuXml } from '../shared/feishu-xml';
 import { recordToAppendMarkdown, recordToDocumentTitle, recordToMarkdown } from '../shared/markdown';
 import { loadSettings } from '../shared/settings';
 import type { DocumentTarget, StudyRecord } from '../shared/types';
@@ -136,6 +137,7 @@ async function syncJob(job: SyncJob, context: DocumentContext): Promise<Document
       target: job.target,
       documentId: existing.documentId,
       markdown: recordToAppendMarkdown(record),
+      xml: job.target === 'feishu' ? recordToFeishuAppendXml(record) : undefined,
     });
     if (!result.ok) throw new Error(result.error ?? '追加失败');
     return { ...result, title: existing.title ?? recordToDocumentTitle(record) };
@@ -144,6 +146,7 @@ async function syncJob(job: SyncJob, context: DocumentContext): Promise<Document
     target: job.target,
     title: recordToDocumentTitle(record),
     markdown: recordToMarkdown(record),
+    xml: job.target === 'feishu' ? recordToFeishuXml(record) : undefined,
   });
   if (!result.ok) throw new Error(result.error ?? '创建失败');
   return result;

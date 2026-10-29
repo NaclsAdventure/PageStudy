@@ -334,6 +334,7 @@ export interface DocumentWriteResult {
   documentId?: string;
   url?: string;
   path?: string;
+  warnings?: string[];
   error?: string;
 }
 

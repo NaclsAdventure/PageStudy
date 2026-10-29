@@ -7,8 +7,8 @@ PageStudy 是一个 Chrome / Edge 的 MV3 浏览器扩展，用来把网页阅�
 3. 选中文字自动聚焦，不需要再点“加入上下文”；直接向大模型提问。
 4. 一键“记录本页”，生成 30 秒速读、核心论证、概念卡、章节笔记和问答沉淀。
 5. 对话只提炼为知识结论，原始对话保存在本地，不整段复制到记录或导出文档。
-6. 记录中的图片保留原链接和图注，可以逐张选择是否写入 Markdown。
-7. 把记录写入**飞书文档、Notion 页面或本地 Markdown**（Obsidian / Logseq）。
+6. 记录中的图片保留原链接和图注，可以逐张选择；写入飞书时上传为原生图片块，Markdown / Notion 使用图片链接。
+7. 把记录写入**飞书文档、Notion 页面或本地 Markdown**（Obsidian / Logseq）；写飞书时使用原生 XML 块，并上传选中的正文图片。
 8. 每次保存自动派生**本地 Wiki**：记录页、标签页、概念页互相建立反链。
 9. 把本地 Wiki 发布到**飞书个人文档库**，形成私有 PageStudy Wiki；保存后可按需自动覆盖更新。
 10. 保存后自动同步文档；失败任务进入持久队列，退避重试并在扩展启动时补传。
@@ -164,7 +164,7 @@ PageStudy 的处理方式：
 
 ### 图片边界
 
-当前版本把正文图片的**远程地址和图注**保存在记录中，Markdown 使用图片链接而不是本地文件。这样不会把图片二进制塞进 IndexedDB，也不依赖额外的文件权限；缺点是需要联网才能显示图片，飞书/Notion 可能不会自动抓取外链图片。下载图片、上传到飞书素材库和嵌入图片块属于后续稳定版能力。
+当前版本把正文图片的**远程地址和图注**保存在记录中，IndexedDB 不存图片二进制。Markdown / Notion 使用图片链接；写入飞书时，扩展生成 `<img href="...">`，由 lark-cli 下载并上传为飞书图片块，因此飞书文档离线也能显示已上传的图片。图片下载仍受原图防盗链、登录态和有效期影响；上传失败的图片占位会被清理，并在写入结果中返回 warning。
 
 ### 记录库
 
@@ -273,6 +273,7 @@ lark-cli auth status
 - `docx:document:create`
 - `docx:document:write_only`
 - `docx:document:readonly`（检查/回查时）
+- `drive:file:upload`（把选中图片上传为飞书图片块）
 - `wiki:wiki`、`wiki:wiki:readonly`、`wiki:space:read`
 - `wiki:node:create`、`wiki:node:retrieve`、`wiki:node:read`
 - `drive:drive.metadata:readonly`（更新标题/链接元数据时）
@@ -283,7 +284,7 @@ lark-cli auth status
 - 桥接 Token：如果启动时设置了 `PAGE_STUDY_BRIDGE_TOKEN`，填写同一个值；否则留空。
 - 父文件夹 / 知识库节点 Token：可选；填写后新文档会创建到该位置。
 
-首次写入会创建新文档，并把返回的 URL 保存到记录里；已有文档时可以追加或新建一份。
+首次写入会创建新文档，并把返回的 URL 保存到记录里；已有文档时可以追加或新建一份。飞书正文使用 DocxXML 原生块：标题、列表、callout、章节和图片都是可编辑的飞书块，不是一整块 HTML 或 Markdown 文本。选中的图片会随首次写入上传；追加更新只写新增的速读、概念、问答和笔记，不重复上传图片。
 
 ### 飞书 Wiki 发布
 
@@ -362,6 +363,7 @@ npm run typecheck  # TypeScript 严格检查
 npm test           # Vitest
 npm run build      # 页面 + content script + background
 npm run verify:bridge  # 用假 Notion API 验证桥接创建/追加、Markdown 写入和路径拦截
+npm run verify:feishu  # 用假 lark-cli 验证飞书 XML、图片地址和本地文件引用拦截
 npm run verify:wiki    # 用假 lark-cli 验证 Wiki 创建、复用、幂等更新、失败重试与链接替换
 ```
 
@@ -373,7 +375,7 @@ src/
   content/         内容脚本：正文/大纲/选区提取、悬浮按钮
   dashboard/       记录库 + 本地 Wiki + 飞书 Wiki 发布
   options/         设置页面：模型、文档与同步、桥接、Skills、数据
-  shared/          类型、常量、设置、上下文拼装、IndexedDB、Markdown、文档引用、Wiki、Wiki 发布、Skill 提示词
+  shared/          类型、常量、设置、上下文拼装、IndexedDB、Markdown、飞书 DocxXML、文档引用、Wiki、Wiki 发布、Skill 提示词
   sidepanel/       侧栏 React 应用与大纲树
 bridge/
   lark-bridge.mjs      本地桥接 HTTP 服务
@@ -405,7 +407,8 @@ public/
 - 内容脚本会注入所有 HTTP/HTTPS 页面；这是为了按需读取当前文章，未做站点白名单。
 - 浏览器内置页不能读取正文，只能手动摘录；扩展不会、也不能绕过浏览器限制。
 - 网页改版后，旧记录的锚点可能失效，但正文快照、知识卡和笔记仍保存在本地。
-- 图片只保存远程链接和图注，不下载图片本体；离线或原图失效时，记录中的图片无法显示。
+- 图片在本地只保存远程链接和图注，不下载二进制；写入飞书时才会下载并上传为图片块。离线或原图失效时，本地记录中的图片仍无法显示。
+- 飞书图片上传受原图防盗链、登录态、有效期和单图 20MB 限制，且只支持 lark-cli 能识别的 PNG / JPEG / GIF / WebP；SVG 等格式会跳过并返回 warning。
 - 智能上下文目前是关键词/二元组检索，不是语义向量检索；长文可能漏掉同义表达的相关段落。
 - Notion MVP 只支持写入父页面，不直接支持 database 属性。
 - 飞书 Wiki 发布到当前用户的个人文档库（`my_library`），不会选择团队知识空间；云端文档权限跟随个人文档库，扩展不会主动改为公开。

@@ -119,6 +119,43 @@ function parseJsonObject(text) {
   }
 }
 
+function normalizeWarnings(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === 'string') return item.trim();
+      if (item && typeof item === 'object') {
+        return String(item.message || item.msg || item.error || '').trim();
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
+/**
+ * PageStudy 只需要生成式 XML，不接受资源路径或可执行内容。
+ * 特别要拦住 <img path="@文件">：lark-cli 会把本地文件上传到飞书，
+ * 不能让桥接的 XML 参数变成读取本机任意文件的通道。
+ */
+function assertSafeFeishuXml(xml) {
+  if (/<!\s*(DOCTYPE|ENTITY)\b/i.test(xml)) {
+    throw new Error('飞书 XML 不允许 DOCTYPE 或 ENTITY。');
+  }
+  if (/<\s*(script|iframe|object|embed|html5-block|source|whiteboard)\b/i.test(xml)) {
+    throw new Error('飞书 XML 包含不允许的标签。');
+  }
+  const images = xml.match(/<img\b[^>]*>/gi) || [];
+  for (const image of images) {
+    if (/\s(path|src|token)\s*=/i.test(image)) {
+      throw new Error('飞书图片只接受远程 http(s) 地址，不接受本地资源引用。');
+    }
+    if (!/\bhref\s*=\s*"https?:\/\//i.test(image)) {
+      throw new Error('飞书图片必须使用远程 http(s) 地址。');
+    }
+  }
+}
+
 let larkLauncherCache = null;
 
 /**
@@ -240,31 +277,43 @@ function validateDocumentToken(token) {
   return token;
 }
 
-async function createDoc({ title, markdown, parentToken }) {
-  if (typeof markdown !== 'string' || !markdown.trim()) {
-    throw new Error('Markdown 内容不能为空。');
+async function createDoc({ title, markdown, xml, parentToken }) {
+  const content = typeof xml === 'string' ? xml.trim() : '';
+  const fallback = typeof markdown === 'string' ? markdown.trim() : '';
+  if (!content && !fallback) {
+    throw new Error('文档内容不能为空。');
   }
-  if (markdown.length > 6 * 1024 * 1024) {
-    throw new Error('Markdown 内容超过 6MB。');
+  const format = content ? 'xml' : 'markdown';
+  const body = content || fallback;
+  if (body.length > 6 * 1024 * 1024) {
+    throw new Error('文档内容超过 6MB。');
   }
+  if (format === 'xml' && !/<title>[\s\S]*?<\/title>/i.test(body)) {
+    throw new Error('飞书 XML 必须包含 <title>。');
+  }
+  if (format === 'xml') assertSafeFeishuXml(body);
   const safeTitle = String(title || '').replace(/\s+/g, ' ').trim().slice(0, 200);
   const heading = safeTitle || 'PageStudy 学习记录';
-  // 用传入标题替换 Markdown 的 H1，让飞书文档标题与学习记录标题一致；
-  // 不把 title 作为 shell 参数传入，避免网页标题中的特殊字符影响命令。
-  const content = /^#\s+/m.test(markdown)
-    ? markdown.replace(/^#\s+.*$/m, `# ${heading}`)
-    : `# ${heading}\n\n${markdown}`;
+  let documentContent = body;
+  if (format === 'markdown') {
+    // 用传入标题替换 Markdown 的 H1，让飞书文档标题与学习记录标题一致；
+    // 不把 title 作为 shell 参数传入，避免网页标题中的特殊字符影响命令。
+    documentContent = /^#\s+/m.test(body)
+      ? body.replace(/^#\s+.*$/m, `# ${heading}`)
+      : `# ${heading}\n\n${body}`;
+  }
 
+  const filename = format === 'xml' ? 'document.xml' : 'document.md';
   const dir = await mkdtemp(path.join(os.tmpdir(), 'pagestudy-feishu-'));
   try {
-    await writeFile(path.join(dir, 'document.md'), content, 'utf8');
+    await writeFile(path.join(dir, filename), documentContent, 'utf8');
     const args = [
       'docs',
       '+create',
       '--doc-format',
-      'markdown',
+      format,
       '--content',
-      '@document.md',
+      `@${filename}`,
       '--as',
       'user',
     ];
@@ -280,21 +329,30 @@ async function createDoc({ title, markdown, parentToken }) {
       ok: true,
       documentId: document.document_id,
       url: document.url || '',
-      warnings: parsed?.data?.warnings ?? [],
+      warnings: normalizeWarnings(parsed?.data?.warnings),
     };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
 
-async function appendDoc({ documentId, markdown }) {
-  if (typeof markdown !== 'string' || !markdown.trim()) {
-    throw new Error('Markdown 内容不能为空。');
+async function appendDoc({ documentId, markdown, xml }) {
+  const content = typeof xml === 'string' ? xml.trim() : '';
+  const fallback = typeof markdown === 'string' ? markdown.trim() : '';
+  if (!content && !fallback) {
+    throw new Error('追加内容不能为空。');
   }
+  const format = content ? 'xml' : 'markdown';
+  const body = content || fallback;
+  if (body.length > 6 * 1024 * 1024) {
+    throw new Error('追加内容超过 6MB。');
+  }
+  if (format === 'xml') assertSafeFeishuXml(body);
   const token = validateDocumentToken(documentId);
+  const filename = format === 'xml' ? 'document.xml' : 'document.md';
   const dir = await mkdtemp(path.join(os.tmpdir(), 'pagestudy-feishu-'));
   try {
-    await writeFile(path.join(dir, 'document.md'), markdown, 'utf8');
+    await writeFile(path.join(dir, filename), body, 'utf8');
     const args = [
       'docs',
       '+update',
@@ -303,9 +361,9 @@ async function appendDoc({ documentId, markdown }) {
       '--command',
       'append',
       '--doc-format',
-      'markdown',
+      format,
       '--content',
-      '@document.md',
+      `@${filename}`,
       '--as',
       'user',
     ];
@@ -314,7 +372,11 @@ async function appendDoc({ documentId, markdown }) {
     if (!parsed?.ok) {
       throw new Error(parsed?.error?.message || '飞书 CLI 追加失败。');
     }
-    return { ok: true, documentId: token };
+    return {
+      ok: true,
+      documentId: token,
+      warnings: normalizeWarnings(parsed?.data?.warnings),
+    };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -369,6 +431,7 @@ const server = http.createServer(async (req, res) => {
       const result = await createDoc({
         title: body.title,
         markdown: body.markdown,
+        xml: body.xml,
         parentToken: body.parentToken,
       });
       sendJson(res, 200, result, headers);
@@ -381,6 +444,7 @@ const server = http.createServer(async (req, res) => {
       const result = await appendDoc({
         documentId: decodeURIComponent(appendMatch[1]),
         markdown: body.markdown,
+        xml: body.xml,
       });
       sendJson(res, 200, result, headers);
       return;

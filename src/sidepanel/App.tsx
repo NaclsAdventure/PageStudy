@@ -825,7 +825,13 @@ export default function App() {
         title: current.page.title,
       });
       await persistRecord(next);
-      showNotice(mode === 'append' ? `已追加到${DOCUMENT_TARGET_SHORT_LABELS[target]}。` : `已写入${DOCUMENT_TARGET_SHORT_LABELS[target]}。`, 'success');
+      const warning = response.warnings?.length
+        ? `；${response.warnings.slice(0, 2).join('；')}`
+        : '';
+      showNotice(
+        `${mode === 'append' ? '已追加到' : '已写入'}${DOCUMENT_TARGET_SHORT_LABELS[target]}${warning}`,
+        warning ? 'info' : 'success',
+      );
       // 不自动打开外部文档标签页：切换标签会丢失侧栏的当前网页上下文。
     } catch (error) {
       showNotice(asErrorMessage(error), 'error');
