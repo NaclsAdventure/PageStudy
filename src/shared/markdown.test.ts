@@ -71,6 +71,8 @@ function buildRecord(notes = '我自己的笔记'): StudyRecord {
           insight: '主动阅读强调先形成问题，再用原文修正判断。',
           evidence: ['[§intro]'],
           concepts: ['主动阅读'],
+          outlineId: 'ps-outline-1',
+          sectionTitle: '引言',
         },
       ],
       generatedAt: 1,
@@ -110,6 +112,7 @@ describe('recordToMarkdown', () => {
     expect(markdown).toContain('![图 1：主动阅读流程](https://example.com/diagram.png)');
     expect(markdown).toContain('## 问答沉淀');
     expect(markdown).toContain('主动阅读强调先形成问题');
+    expect(markdown).toContain('归属：引言');
     expect(markdown).toContain('## 我的判断');
     expect(markdown).not.toContain('## 对话摘录');
     expect(markdown).not.toContain('**我：**');

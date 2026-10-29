@@ -1289,3 +1289,42 @@ a {
     border-bottom: 1px solid var(--line);
   }
 }
+
+.outline-insight-badge {
+  background: #fff7e6;
+  color: #9a6700;
+}
+
+.outline-insights {
+  display: grid;
+  gap: 5px;
+  margin: 4px 0 6px;
+  padding-top: 5px;
+  border-top: 1px dashed var(--line);
+}
+
+.outline-insight {
+  padding: 5px 6px;
+  border-radius: 5px;
+  background: #f7faf8;
+}
+
+.outline-insight strong {
+  display: block;
+  color: var(--ink);
+  font-size: 9px;
+}
+
+.outline-insight p {
+  margin: 2px 0 0;
+  color: #3c4d46;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.outline-insight span {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 9px;
+}

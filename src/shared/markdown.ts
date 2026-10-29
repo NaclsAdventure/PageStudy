@@ -128,6 +128,9 @@ export function recordToMarkdown(record: StudyRecord): string {
       lines.push(`### ${insight.question}`);
       lines.push('');
       lines.push(insight.insight);
+      if (insight.sectionTitle) {
+        lines.push('', `归属：${insight.sectionTitle}`);
+      }
       if (insight.evidence.length > 0) {
         lines.push('', `依据：${insight.evidence.join('；')}`);
       }
@@ -176,7 +179,8 @@ export function recordToAppendMarkdown(record: StudyRecord, now = Date.now()): s
     if (summary.dialogueInsights && summary.dialogueInsights.length > 0) {
       lines.push('', '### 问答沉淀');
       for (const insight of summary.dialogueInsights) {
-        lines.push(`- ${insight.question}：${insight.insight}`);
+        const section = insight.sectionTitle ? `（归属：${insight.sectionTitle}）` : '';
+        lines.push(`- ${insight.question}：${insight.insight}${section}`);
       }
     }
   }

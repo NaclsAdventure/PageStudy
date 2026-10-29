@@ -3,6 +3,7 @@ import type {
   BridgeHealthResponse,
   ChatPortEvent,
   ChatPortRequest,
+  DistillResponse,
   DocumentWriteResponse,
   FeishuWriteResponse,
   ModelsResponse,
@@ -25,6 +26,7 @@ import { buildChatSystemPrompt, getAllSkills, getSkillById } from '../shared/ski
 import { asErrorMessage } from '../shared/utils';
 import { fetchModels, requestChat, testProvider } from './providers';
 import { generateSummary } from './summary';
+import { distillDiscussion } from './distill';
 import { checkBridge } from './bridge';
 import { appendDocument, writeDocument } from './documents';
 import {
@@ -189,6 +191,23 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
           const response: SummarizeResponse = { ok: true };
           try {
             response.summary = await generateSummary(message.request, getActiveProvider(settings));
+          } catch (error) {
+            response.ok = false;
+            response.error = asErrorMessage(error);
+          }
+          sendResponse(response);
+          return;
+        }
+        case 'PS_DISTILL_DISCUSSION': {
+          const settings = await loadSettings();
+          const response: DistillResponse = { ok: true };
+          try {
+            const insight = await distillDiscussion(message.request, getActiveProvider(settings));
+            if (insight) response.insight = insight;
+            else {
+              response.skip = true;
+              response.reason = '这轮讨论没有检测到需要新增的结论。';
+            }
           } catch (error) {
             response.ok = false;
             response.error = asErrorMessage(error);

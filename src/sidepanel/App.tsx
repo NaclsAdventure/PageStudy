@@ -5,7 +5,10 @@ import type {
   ChatRequest,
   BridgeHealth,
   ContextMode,
+  DialogueInsight,
+  DistillRequest,
   DocumentTarget,
+  OutlineNode,
   PageContext,
   PageSummary,
   PublicSettings,
@@ -41,6 +44,7 @@ import {
   type BridgeHealthResponse,
   type ChatPortEvent,
   type ChatPortRequest,
+  type DistillResponse,
   type PageContextResponse,
   type SelectionResponse,
   type SummarizeResponse,
@@ -56,12 +60,84 @@ interface PublicSettingsResponse {
 }
 
 type NoticeKind = 'info' | 'success' | 'error';
+interface NoticeAction {
+  label: string;
+  onClick: () => void;
+}
 interface Notice {
   text: string;
   kind: NoticeKind;
+  action?: NoticeAction;
 }
 
 type SideTab = 'chat' | 'record';
+
+interface DistillDraft {
+  userMessageId: string;
+  assistantMessageId: string;
+  sectionId: string;
+  question: string;
+  insight: string;
+  evidence: string;
+  concepts: string;
+  loading: boolean;
+  ready: boolean;
+  error: string;
+  skipMessage: string;
+}
+
+interface DiscussionTurn {
+  user: ChatMessage;
+  assistant: ChatMessage;
+}
+
+interface MergeUndo {
+  recordId: string;
+  summary: PageSummary;
+  distilledMessageIds: string[];
+}
+
+function splitList(value: string, pattern: RegExp): string[] {
+  return uniqueStrings(
+    value
+      .split(pattern)
+      .map((item) => item.replace(/^[-*]\s*/, '').trim())
+      .filter(Boolean),
+  );
+}
+
+function findTurnSection(message: ChatMessage, outline: OutlineNode[]): OutlineNode | null {
+  const nodes = flattenOutline(outline);
+  if (message.anchor) {
+    const byAnchor = nodes.find(
+      (node) => node.anchor === message.anchor || node.id === message.anchor,
+    );
+    if (byAnchor) return byAnchor;
+  }
+  const heading = message.headingPath?.[message.headingPath.length - 1]?.trim();
+  if (heading) return nodes.find((node) => node.title === heading) ?? null;
+  return null;
+}
+
+function findPendingTurn(record: StudyRecord): DiscussionTurn | null {
+  const distilled = new Set(record.distilledMessageIds ?? []);
+  const messages = record.messages;
+  for (let index = messages.length - 1; index >= 1; index -= 1) {
+    const user = messages[index - 1];
+    const assistant = messages[index];
+    if (user.role !== 'user' || assistant.role !== 'assistant') continue;
+    if (!user.content.trim() || !assistant.content.trim() || assistant.error) continue;
+    if (distilled.has(user.id) || distilled.has(assistant.id)) continue;
+    return { user, assistant };
+  }
+  return null;
+}
+
+function turnIsDistilled(record: StudyRecord | null, turn: DiscussionTurn): boolean {
+  if (!record) return false;
+  const ids = new Set(record.distilledMessageIds ?? []);
+  return ids.has(turn.user.id) || ids.has(turn.assistant.id);
+}
 
 function activeProviderOf(settings: PublicSettings | null) {
   return settings ? settings.providers[settings.activeProvider] : null;
@@ -104,6 +180,7 @@ export default function App() {
   const [manualTitle, setManualTitle] = useState('');
   const [manualUrl, setManualUrl] = useState('');
   const [manualText, setManualText] = useState('');
+  const [distillDraft, setDistillDraft] = useState<DistillDraft | null>(null);
   const manualContextRef = useRef<{ url: string; title: string; text: string }>({ url: '', title: '', text: '' });
   const autoSyncTimerRef = useRef<number | null>(null);
 
@@ -117,10 +194,10 @@ export default function App() {
   const noticeTimerRef = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  const showNotice = useCallback((text: string, kind: NoticeKind = 'info') => {
+  const showNotice = useCallback((text: string, kind: NoticeKind = 'info', action?: NoticeAction) => {
     if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
-    setNotice({ text, kind });
-    noticeTimerRef.current = window.setTimeout(() => setNotice(null), 4200);
+    setNotice({ text, kind, action });
+    noticeTimerRef.current = window.setTimeout(() => setNotice(null), action ? 8000 : 4200);
   }, []);
 
   const applyMessages = useCallback(
@@ -522,6 +599,8 @@ export default function App() {
       content: text,
       createdAt: Date.now(),
       skillId,
+      anchor: selection?.anchor,
+      headingPath: selection?.headingPath,
     };
     const assistantMessage: ChatMessage = {
       id: `assistant_${requestId}`,
@@ -529,6 +608,8 @@ export default function App() {
       content: '',
       createdAt: Date.now(),
       skillId,
+      anchor: selection?.anchor,
+      headingPath: selection?.headingPath,
     };
     const history: ChatHistoryMessage[] = [...messagesRef.current, userMessage]
       .filter((message) => message.content.trim() && !message.error)
@@ -683,6 +764,194 @@ export default function App() {
     } finally {
       setSummaryLoading(false);
     }
+  };
+
+  const openDistill = (turn: DiscussionTurn) => {
+    const current = recordRef.current;
+    if (!current) return;
+    if (!current.summary) {
+      showNotice('先生成全文总览，再把讨论收进本节。', 'info');
+      return;
+    }
+    const match = findTurnSection(turn.user, current.page.outline);
+    const fallback = flattenOutline(current.page.outline)[0];
+    setDistillDraft({
+      userMessageId: turn.user.id,
+      assistantMessageId: turn.assistant.id,
+      sectionId: match?.id ?? fallback?.id ?? '',
+      question: '',
+      insight: '',
+      evidence: '',
+      concepts: '',
+      loading: false,
+      ready: false,
+      error: '',
+      skipMessage: '',
+    });
+  };
+
+  const runDistill = async () => {
+    const draft = distillDraft;
+    const current = recordRef.current;
+    if (!draft || !current) return;
+    const user = current.messages.find((message) => message.id === draft.userMessageId);
+    const assistant = current.messages.find((message) => message.id === draft.assistantMessageId);
+    if (!user || !assistant) {
+      setDistillDraft(null);
+      showNotice('这轮对话已不存在，请重新提问后再整理。', 'error');
+      return;
+    }
+    const section = distillSections.find((item) => item.id === draft.sectionId) ?? distillSections[0];
+    const existingSection = current.summary?.sections.find((item) => item.outlineId === section.id);
+    const request: DistillRequest = {
+      page: current.page,
+      section: {
+        outlineId: section.id,
+        title: section.title,
+        anchor: section.anchor,
+        summary: existingSection?.summary ?? '',
+        keyPoints: existingSection?.keyPoints ?? [],
+        questions: existingSection?.questions ?? [],
+      },
+      messages: [
+        { role: 'user', content: user.content },
+        { role: 'assistant', content: assistant.content },
+      ],
+      selection:
+        current.selections.find((item) => item.anchor === user.anchor) ??
+        (selection && selection.anchor === user.anchor ? selection : null),
+      language: settings?.outputLanguage ?? '中文',
+    };
+    setDistillDraft((previous) =>
+      previous
+        ? { ...previous, loading: true, ready: false, error: '', skipMessage: '' }
+        : previous,
+    );
+    try {
+      const response = await sendRuntimeMessage<DistillResponse>({
+        type: 'PS_DISTILL_DISCUSSION',
+        request,
+      });
+      if (!response.ok) throw new Error(response.error ?? '讨论精炼失败');
+      if (response.skip || !response.insight) {
+        setDistillDraft((previous) =>
+          previous
+            ? {
+                ...previous,
+                loading: false,
+                ready: true,
+                question: previous.question || truncate(user.content, 160),
+                insight: '',
+                skipMessage: response.reason ?? '这轮讨论没有检测到需要新增的结论。',
+              }
+            : previous,
+        );
+        return;
+      }
+      setDistillDraft((previous) =>
+        previous
+          ? {
+              ...previous,
+              loading: false,
+              ready: true,
+              question: response.insight?.question ?? '',
+              insight: response.insight?.insight ?? '',
+              evidence: response.insight?.evidence.join('；') ?? '',
+              concepts: response.insight?.concepts.join('、') ?? '',
+              skipMessage: '',
+            }
+          : previous,
+      );
+    } catch (error) {
+      setDistillDraft((previous) =>
+        previous ? { ...previous, loading: false, error: asErrorMessage(error) } : previous,
+      );
+    }
+  };
+
+  const restoreMerge = async (undo: MergeUndo) => {
+    const current = recordRef.current;
+    if (!current || current.id !== undo.recordId) return;
+    const next: StudyRecord = {
+      ...current,
+      summary: undo.summary,
+      distilledMessageIds: undo.distilledMessageIds,
+      updatedAt: Date.now(),
+    };
+    await persistRecord(next);
+    void queueAutoSync(next);
+    void queueWikiAutoSync();
+    showNotice('已撤销本次并入。', 'info');
+  };
+
+  const mergeDistill = async () => {
+    const draft = distillDraft;
+    const current = recordRef.current;
+    if (!draft || !current?.summary) return;
+    if (!draft.question.trim() || !draft.insight.trim()) {
+      showNotice('先补全问题和结论，再并入本节。', 'info');
+      return;
+    }
+    const section = distillSections.find((item) => item.id === draft.sectionId) ?? distillSections[0];
+    const insight: DialogueInsight = {
+      question: draft.question.trim(),
+      insight: draft.insight.trim(),
+      evidence: splitList(draft.evidence, /[；;\n]/),
+      concepts: splitList(draft.concepts, /[，,、；;\n]/),
+      outlineId: section.id || undefined,
+      sectionTitle: section.id ? section.title : undefined,
+      sourceMessageIds: [draft.userMessageId, draft.assistantMessageId],
+    };
+    const existing = current.summary.dialogueInsights ?? [];
+    const duplicate = existing.some(
+      (item) => item.question === insight.question && item.insight === insight.insight,
+    );
+    const nextSummary = duplicate
+      ? current.summary
+      : { ...current.summary, dialogueInsights: [...existing, insight] };
+    const next: StudyRecord = {
+      ...current,
+      summary: nextSummary,
+      distilledMessageIds: uniqueStrings([
+        ...(current.distilledMessageIds ?? []),
+        draft.userMessageId,
+        draft.assistantMessageId,
+      ]),
+      status: 'ready',
+      updatedAt: Date.now(),
+    };
+    const undo: MergeUndo = {
+      recordId: current.id,
+      summary: current.summary,
+      distilledMessageIds: [...(current.distilledMessageIds ?? [])],
+    };
+    setDistillDraft(null);
+    await persistRecord(next);
+    void queueAutoSync(next);
+    void queueWikiAutoSync();
+    if (duplicate) {
+      showNotice('这条结论已存在，本轮已标记整理。', 'success');
+      return;
+    }
+    showNotice('已并入本节笔记。', 'success', {
+      label: '撤销',
+      onClick: () => void restoreMerge(undo),
+    });
+  };
+
+  const updateSectionNotes = () => {
+    const current = recordRef.current;
+    if (!current) return;
+    if (!current.summary) {
+      showNotice('先生成全文总览，再更新本节笔记。', 'info');
+      return;
+    }
+    const pending = findPendingTurn(current);
+    if (!pending) {
+      showNotice('没有待整理的讨论。先在对话里提问，再点回答下方的“收进本节”。', 'info');
+      return;
+    }
+    openDistill(pending);
   };
 
   const recordPage = async (withSummary: boolean) => {
@@ -881,6 +1150,20 @@ export default function App() {
   const outline = record?.page.outline ?? page?.outline ?? [];
   const summary = record?.summary ?? null;
   const readingMinutes = page ? Math.max(1, Math.round(page.wordCount / 450)) : 0;
+  const flatOutline = useMemo(() => flattenOutline(outline), [outline]);
+  const distillSections = useMemo(
+    () =>
+      flatOutline.length > 0
+        ? flatOutline.map((node) => ({ id: node.id, title: node.title, anchor: node.anchor, level: node.level }))
+        : [{ id: '', title: '整篇笔记', anchor: '', level: 1 }],
+    [flatOutline],
+  );
+  const distillTurn = distillDraft
+    ? {
+        user: messages.find((message) => message.id === distillDraft.userMessageId),
+        assistant: messages.find((message) => message.id === distillDraft.assistantMessageId),
+      }
+    : null;
 
   return (
     <div className="app-shell">
@@ -1061,37 +1344,64 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              messages.map((message) => (
-                <article
-                  key={message.id}
-                  className={`message ${message.role === 'user' ? 'message-user' : 'message-assistant'}${
-                    message.error ? ' message-error' : ''
-                  }`}
-                >
-                  <div className="message-avatar">{message.role === 'user' ? '我' : 'PS'}</div>
-                  <div className="message-main">
-                    <div className="message-role">
-                      {message.role === 'user' ? '你' : '助教'}
-                      {message.skillId && message.role === 'assistant' ? (
-                        <span>{getSkillById(skills, message.skillId).name}</span>
+              messages.map((message, index) => {
+                const previous = index > 0 ? messages[index - 1] : null;
+                const turn =
+                  previous?.role === 'user' && message.role === 'assistant'
+                    ? { user: previous, assistant: message }
+                    : null;
+                const canDistill = Boolean(
+                  turn && record && message.content.trim() && !message.error,
+                );
+                const distilled = turn ? turnIsDistilled(record, turn) : false;
+                const section = turn ? findTurnSection(turn.user, outline) : null;
+                return (
+                  <article
+                    key={message.id}
+                    className={`message ${message.role === 'user' ? 'message-user' : 'message-assistant'}${
+                      message.error ? ' message-error' : ''
+                    }`}
+                  >
+                    <div className="message-avatar">{message.role === 'user' ? '我' : 'PS'}</div>
+                    <div className="message-main">
+                      <div className="message-role">
+                        {message.role === 'user' ? '你' : '助教'}
+                        {message.skillId && message.role === 'assistant' ? (
+                          <span>{getSkillById(skills, message.skillId).name}</span>
+                        ) : null}
+                      </div>
+                      {message.content ? (
+                        message.role === 'assistant' ? (
+                          <RichText text={message.content} />
+                        ) : (
+                          <p className="user-text">{message.content}</p>
+                        )
+                      ) : (
+                        <span className="typing">
+                          <span />
+                          <span />
+                          <span />
+                        </span>
+                      )}
+                      {canDistill && turn ? (
+                        <div className="message-actions">
+                          <button
+                            type="button"
+                            className="message-save-button"
+                            disabled={distilled}
+                            onClick={() => openDistill(turn)}
+                          >
+                            {distilled ? '已收进本节' : '收进本节'}
+                          </button>
+                          <span className="message-section">
+                            {section ? `§ ${section.title}` : '整篇笔记'}
+                          </span>
+                        </div>
                       ) : null}
                     </div>
-                    {message.content ? (
-                      message.role === 'assistant' ? (
-                        <RichText text={message.content} />
-                      ) : (
-                        <p className="user-text">{message.content}</p>
-                      )
-                    ) : (
-                      <span className="typing">
-                        <span />
-                        <span />
-                        <span />
-                      </span>
-                    )}
-                  </div>
-                </article>
-              ))
+                  </article>
+                );
+              })
             )}
             <div ref={messagesEndRef} />
           </div>
@@ -1142,6 +1452,7 @@ export default function App() {
               onJump={jumpToAnchor}
               onOpenSource={openSource}
               onResummarize={resummarize}
+              onUpdateSection={updateSectionNotes}
               onWriteDocument={writeDocument}
               onRefreshSync={refreshRecordSync}
               onCopyMarkdown={copyMarkdown}
@@ -1197,7 +1508,190 @@ export default function App() {
         </main>
       )}
 
-      {notice ? <div className={`notice notice-${notice.kind}`}>{notice.text}</div> : null}
+      {distillDraft ? (
+        <div className="modal-backdrop" role="presentation">
+          <section
+            className="distill-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="收进本节笔记"
+          >
+            <div className="distill-dialog-head">
+              <div>
+                <strong>收进本节笔记</strong>
+                <p>只提炼这一轮讨论，不会重新生成全文知识卡。</p>
+              </div>
+              <button
+                type="button"
+                className="dialog-close"
+                onClick={() => setDistillDraft(null)}
+                aria-label="关闭"
+              >
+                ×
+              </button>
+            </div>
+
+            <label className="distill-field">
+              <span>归属章节</span>
+              <select
+                value={distillDraft.sectionId}
+                onChange={(event) =>
+                  setDistillDraft((previous) =>
+                    previous ? { ...previous, sectionId: event.target.value } : previous,
+                  )
+                }
+                disabled={distillDraft.loading}
+              >
+                {distillSections.map((section) => (
+                  <option key={section.id || 'whole'} value={section.id}>
+                    {section.level > 1 ? `${'　'.repeat(Math.min(3, section.level - 1))}` : ''}
+                    {section.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {distillTurn?.user ? (
+              <details className="distill-source">
+                <summary>查看本轮讨论</summary>
+                <p>
+                  <strong>你：</strong>
+                  {truncate(distillTurn.user.content, 500)}
+                </p>
+                {distillTurn.assistant ? (
+                  <p>
+                    <strong>助教：</strong>
+                    {truncate(distillTurn.assistant.content, 800)}
+                  </p>
+                ) : null}
+              </details>
+            ) : null}
+
+            {distillDraft.error ? <div className="error-box">{distillDraft.error}</div> : null}
+            {distillDraft.skipMessage ? (
+              <p className="distill-skip">{distillDraft.skipMessage}</p>
+            ) : null}
+
+            {distillDraft.loading ? (
+              <div className="distill-loading">
+                <span className="spinner" />
+                <span>正在提炼这一轮讨论…</span>
+              </div>
+            ) : null}
+
+            {distillDraft.ready ? (
+              <div className="distill-fields">
+                <label className="distill-field">
+                  <span>问题</span>
+                  <input
+                    value={distillDraft.question}
+                    onChange={(event) =>
+                      setDistillDraft((previous) =>
+                        previous ? { ...previous, question: event.target.value } : previous,
+                      )
+                    }
+                    placeholder="这轮讨论真正想解决的问题"
+                  />
+                </label>
+                <label className="distill-field">
+                  <span>结论</span>
+                  <textarea
+                    value={distillDraft.insight}
+                    onChange={(event) =>
+                      setDistillDraft((previous) =>
+                        previous ? { ...previous, insight: event.target.value } : previous,
+                      )
+                    }
+                    placeholder="讨论后得到的新理解、纠正或判断"
+                    rows={4}
+                  />
+                </label>
+                <label className="distill-field">
+                  <span>依据</span>
+                  <input
+                    value={distillDraft.evidence}
+                    onChange={(event) =>
+                      setDistillDraft((previous) =>
+                        previous ? { ...previous, evidence: event.target.value } : previous,
+                      )
+                    }
+                    placeholder="[§锚点] 或 对话补充，用分号分隔"
+                  />
+                </label>
+                <label className="distill-field">
+                  <span>概念</span>
+                  <input
+                    value={distillDraft.concepts}
+                    onChange={(event) =>
+                      setDistillDraft((previous) =>
+                        previous ? { ...previous, concepts: event.target.value } : previous,
+                      )
+                    }
+                    placeholder="相关概念，用顿号或逗号分隔"
+                  />
+                </label>
+              </div>
+            ) : null}
+
+            <div className="distill-actions">
+              {distillDraft.ready ? (
+                <>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => void mergeDistill()}
+                    disabled={!distillDraft.question.trim() || !distillDraft.insight.trim()}
+                  >
+                    并入本节笔记
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => void runDistill()}
+                    disabled={distillDraft.loading}
+                  >
+                    重新提炼
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void runDistill()}
+                  disabled={distillDraft.loading}
+                >
+                  {distillDraft.loading ? '提炼中…' : '提炼这一轮'}
+                </button>
+              )}
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setDistillDraft(null)}
+              >
+                取消
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {notice ? (
+        <div className={`notice notice-${notice.kind}`}>
+          <span>{notice.text}</span>
+          {notice.action ? (
+            <button
+              type="button"
+              className="notice-action"
+              onClick={() => {
+                notice.action?.onClick();
+                setNotice(null);
+              }}
+            >
+              {notice.action.label}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1217,6 +1711,7 @@ interface RecordViewProps {
   onJump: (anchor: string) => void;
   onOpenSource: () => void;
   onResummarize: () => void;
+  onUpdateSection: () => void;
   onWriteDocument: (target: DocumentTarget, mode: DocumentWriteMode) => void;
   onRefreshSync: () => void;
   onCopyMarkdown: () => void;
@@ -1246,6 +1741,7 @@ function RecordView({
   onJump,
   onOpenSource,
   onResummarize,
+  onUpdateSection,
   onWriteDocument,
   onRefreshSync,
   onCopyMarkdown,
@@ -1276,6 +1772,10 @@ function RecordView({
   const selectedImages = new Set(
     record.selectedImageIds ?? pageImages.map((image) => image.id),
   );
+  const outlineIds = new Set(flattenOutline(outline).map((node) => node.id));
+  const visibleDialogueInsights = (summary?.dialogueInsights ?? []).filter(
+    (insight) => !insight.outlineId || !outlineIds.has(insight.outlineId),
+  );
   return (
     <div className="record-view">
       <div className="record-head">
@@ -1302,8 +1802,18 @@ function RecordView({
           className="primary-button"
           onClick={onResummarize}
           disabled={summaryLoading}
+          title="重新读取全文，生成整份知识卡"
         >
-          {summaryLoading ? '精炼中…' : summary ? '重新精炼' : '生成知识卡'}
+          {summaryLoading ? '生成中…' : summary ? '重新生成全文总览' : '生成全文总览'}
+        </button>
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={onUpdateSection}
+          disabled={summaryLoading || !summary}
+          title="把最近一轮还没整理的讨论收进对应章节"
+        >
+          更新本节笔记
         </button>
         <button type="button" className="secondary-button" onClick={onOpenDashboard}>
           记录库
@@ -1460,7 +1970,7 @@ function RecordView({
           <p className="muted">
             {record.status === 'error'
               ? '知识卡生成失败，可以修改模型配置后重试。'
-              : '原文快照已经保存；点击上方“生成知识卡”即可整理全文、概念与对话。'}
+              : '原文快照已经保存；点击上方“生成全文总览”即可整理全文、概念与对话。'}
           </p>
         </section>
       )}
@@ -1502,14 +2012,14 @@ function RecordView({
         </section>
       ) : null}
 
-      {summary?.dialogueInsights && summary.dialogueInsights.length > 0 ? (
+      {visibleDialogueInsights.length > 0 ? (
         <section className="record-section">
           <div className="section-heading">
             <span>问答沉淀</span>
-            <span>{summary.dialogueInsights.length} 条</span>
+            <span>{visibleDialogueInsights.length} 条</span>
           </div>
           <div className="insight-list">
-            {summary.dialogueInsights.map((insight, index) => (
+            {visibleDialogueInsights.map((insight, index) => (
               <div className="insight-item" key={`${insight.question}-${index}`}>
                 <strong>{insight.question}</strong>
                 <p>{insight.insight}</p>

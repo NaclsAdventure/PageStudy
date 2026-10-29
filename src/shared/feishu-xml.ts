@@ -174,6 +174,7 @@ function renderBody(record: StudyRecord, includeTitle: boolean): string[] {
     for (const insight of summary.dialogueInsights) {
       lines.push(heading(3, insight.question));
       lines.push(paragraph(insight.insight));
+      if (insight.sectionTitle) lines.push(paragraph(`归属：${insight.sectionTitle}`));
       if (insight.evidence.length > 0) lines.push(paragraph(`依据：${insight.evidence.join('；')}`));
       if (insight.concepts.length > 0) lines.push(paragraph(`相关概念：${insight.concepts.join('、')}`));
     }
@@ -211,7 +212,8 @@ export function recordToFeishuAppendXml(record: StudyRecord, now = Date.now()): 
     if (summary.dialogueInsights && summary.dialogueInsights.length > 0) {
       lines.push(heading(3, '问答沉淀'));
       for (const insight of summary.dialogueInsights) {
-        lines.push(paragraph(`${insight.question}：${insight.insight}`));
+        const section = insight.sectionTitle ? `（归属：${insight.sectionTitle}）` : '';
+        lines.push(paragraph(`${insight.question}：${insight.insight}${section}`));
       }
     }
   }

@@ -132,6 +132,7 @@ function renderRecordPage(page: WikiPage, index: WikiIndex): string {
       lines.push(`### ${insight.question}`);
       lines.push('');
       lines.push(insight.insight);
+      if (insight.sectionTitle) lines.push('', `归属：${insight.sectionTitle}`);
       if (insight.evidence.length > 0) lines.push('', `依据：${insight.evidence.join('；')}`);
       if (insight.concepts.length > 0) lines.push('', `相关概念：${insight.concepts.join('、')}`);
     }

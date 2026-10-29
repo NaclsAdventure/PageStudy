@@ -88,6 +88,8 @@ function buildRecord(notes = '我自己的笔记'): StudyRecord {
           insight: '主动阅读强调先形成问题，再用原文修正判断。',
           evidence: ['[§intro]'],
           concepts: ['主动阅读'],
+          outlineId: 'ps-outline-1',
+          sectionTitle: '引言',
         },
       ],
       generatedAt: 1,
@@ -128,6 +130,7 @@ describe('recordToFeishuXml', () => {
     expect(xml).toContain('<img href="https://example.com/diagram.png?a=1&amp;b=2" caption="图 1：主动阅读流程"/>');
     expect(xml).not.toContain('unused.png');
     expect(xml).toContain('<h2>问答沉淀</h2>');
+    expect(xml).toContain('归属：引言');
     expect(xml).toContain('<h2>我的判断</h2>');
     expect(xml).toContain('#我的标签');
   });

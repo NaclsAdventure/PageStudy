@@ -244,6 +244,11 @@ export interface DialogueInsight {
   insight: string;
   evidence: string[];
   concepts: string[];
+  /** 讨论结论归属的章节；为空表示整篇/未归类。 */
+  outlineId?: string;
+  sectionTitle?: string;
+  /** 产生这条结论的对话消息，用于避免重复整理。 */
+  sourceMessageIds?: string[];
 }
 
 export interface PageSummary {
@@ -276,6 +281,8 @@ export interface StudyRecord {
   selections: SelectionContext[];
   /** 知识卡中保留的正文图片 ID；undefined 表示默认全部正文图。 */
   selectedImageIds?: string[];
+  /** 已经整理进章节笔记的对话消息 ID，避免重复沉淀。 */
+  distilledMessageIds?: string[];
   notes: string;
   tags: string[];
   status: RecordStatus;
@@ -293,6 +300,9 @@ export interface ChatMessage {
   content: string;
   createdAt: number;
   skillId?: string;
+  /** 提问时选中的章节锚点，便于把讨论归入本节。 */
+  anchor?: string;
+  headingPath?: string[];
   error?: boolean;
 }
 
@@ -344,6 +354,23 @@ export interface SummaryRequest {
   selections: SelectionContext[];
   language: string;
   model: string;
+}
+
+export interface DiscussionSection {
+  outlineId: string;
+  title: string;
+  anchor: string;
+  summary: string;
+  keyPoints: string[];
+  questions: string[];
+}
+
+export interface DistillRequest {
+  page: PageContext;
+  section: DiscussionSection;
+  messages: ChatHistoryMessage[];
+  selection?: SelectionContext | null;
+  language: string;
 }
 
 export interface ChatRequest {

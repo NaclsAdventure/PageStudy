@@ -4,6 +4,8 @@ import type {
   ChatStreamEvent,
   ContextSettings,
   DocumentTarget,
+  DialogueInsight,
+  DistillRequest,
   DocumentWriteResult,
   FeishuWriteResult,
   FeishuWikiState,
@@ -26,6 +28,7 @@ export type RuntimeMessage =
   | { type: 'PS_FETCH_MODELS' }
   | { type: 'PS_TEST_PROVIDER' }
   | { type: 'PS_SUMMARIZE'; request: SummaryRequest }
+  | { type: 'PS_DISTILL_DISCUSSION'; request: DistillRequest }
   | { type: 'PS_BRIDGE_HEALTH' }
   | { type: 'PS_WRITE_DOCUMENT'; target: DocumentTarget; title: string; markdown: string; xml?: string; recordId?: string }
   | { type: 'PS_APPEND_DOCUMENT'; target: DocumentTarget; documentId: string; markdown: string; xml?: string; recordId?: string }
@@ -61,6 +64,14 @@ export interface SelectionResponse {
 export interface SummarizeResponse {
   ok: boolean;
   summary?: PageSummary;
+  error?: string;
+}
+
+export interface DistillResponse {
+  ok: boolean;
+  insight?: DialogueInsight;
+  skip?: boolean;
+  reason?: string;
   error?: string;
 }
 

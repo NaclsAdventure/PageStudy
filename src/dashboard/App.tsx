@@ -333,6 +333,13 @@ export default function DashboardApp() {
     void chrome.runtime.openOptionsPage();
   };
 
+  const visibleDialogueInsights = useMemo(() => {
+    const outlineIds = new Set(flattenOutline(selected?.page.outline ?? []).map((node) => node.id));
+    return (selected?.summary?.dialogueInsights ?? []).filter(
+      (insight) => !insight.outlineId || !outlineIds.has(insight.outlineId),
+    );
+  }, [selected]);
+
   return (
     <div className="dashboard-shell">
       <header className="dashboard-topbar">
@@ -590,10 +597,10 @@ export default function DashboardApp() {
                             ))}
                           </div>
                         ) : null}
-                        {selected.summary.dialogueInsights && selected.summary.dialogueInsights.length > 0 ? (
+                        {visibleDialogueInsights.length > 0 ? (
                           <div className="insight-list">
                             <div className="concept-grid-label">问答沉淀</div>
-                            {selected.summary.dialogueInsights.map((insight, index) => (
+                            {visibleDialogueInsights.map((insight, index) => (
                               <div className="insight-card" key={`${insight.question}-${index}`}>
                                 <strong>{insight.question}</strong>
                                 <p>{insight.insight}</p>

@@ -237,7 +237,7 @@ function parseJsonCandidate(value: string): unknown | null {
   return null;
 }
 
-function extractJson(text: string): unknown {
+export function extractJson(text: string): unknown {
   const trimmed = text.trim().replace(/^\uFEFF/, '');
   const unfenced = trimmed
     .replace(/^```(?:json)?\s*/i, '')
@@ -357,11 +357,16 @@ function normalizeDialogueInsights(raw: unknown): DialogueInsight[] {
     const key = `${question}|${insight}`.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
+    const outlineId = typeof record.outlineId === 'string' ? record.outlineId.trim() : '';
+    const sectionTitle =
+      typeof record.sectionTitle === 'string' ? record.sectionTitle.trim() : '';
     result.push({
       question,
       insight,
       evidence: asStringArray(record.evidence, 4),
       concepts: asStringArray(record.concepts, 6),
+      outlineId: outlineId || undefined,
+      sectionTitle: sectionTitle || undefined,
     });
     if (result.length >= 8) break;
   }

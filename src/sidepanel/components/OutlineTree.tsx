@@ -1,5 +1,5 @@
 import { useState, type ReactElement } from 'react';
-import type { OutlineNode, PageSummary, SummarySection } from '../../shared/types';
+import type { DialogueInsight, OutlineNode, PageSummary, SummarySection } from '../../shared/types';
 import { truncate } from '../../shared/utils';
 
 interface OutlineTreeProps {
@@ -11,16 +11,19 @@ interface OutlineTreeProps {
 interface OutlineItemProps {
   node: OutlineNode;
   summaryByNode: Map<string, SummarySection>;
+  insightsByNode: Map<string, DialogueInsight[]>;
   onJump: (anchor: string) => void;
 }
 
-function OutlineItem({ node, summaryByNode, onJump }: OutlineItemProps) {
+function OutlineItem({ node, summaryByNode, insightsByNode, onJump }: OutlineItemProps) {
   const [open, setOpen] = useState(true);
   const summary = summaryByNode.get(node.id);
+  const insights = insightsByNode.get(node.id) ?? [];
   const hasBody = Boolean(
     summary?.summary ||
       summary?.keyPoints.length ||
       summary?.questions.length ||
+      insights.length ||
       node.text.trim() ||
       node.children.length,
   );
@@ -44,6 +47,7 @@ function OutlineItem({ node, summaryByNode, onJump }: OutlineItemProps) {
           {node.title}
         </button>
         {summary?.keyPoints.length ? <span className="outline-badge">{summary.keyPoints.length}</span> : null}
+        {insights.length ? <span className="outline-badge outline-insight-badge">{insights.length} 讨论</span> : null}
       </div>
       {open && hasBody ? (
         <div className="outline-body">
@@ -63,6 +67,20 @@ function OutlineItem({ node, summaryByNode, onJump }: OutlineItemProps) {
               ))}
             </div>
           ) : null}
+          {insights.length ? (
+            <div className="outline-insights">
+              <span className="outline-question-label">讨论沉淀</span>
+              {insights.map((insight, index) => (
+                <div className="outline-insight" key={`${node.id}-insight-${index}`}>
+                  <strong>{insight.question}</strong>
+                  <p>{insight.insight}</p>
+                  {insight.evidence.length > 0 ? (
+                    <span>依据：{insight.evidence.join('；')}</span>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
           {!summary?.summary && !summary?.keyPoints.length && node.text.trim() ? (
             <p className="outline-excerpt">{truncate(node.text.trim(), 360)}</p>
           ) : null}
@@ -71,6 +89,7 @@ function OutlineItem({ node, summaryByNode, onJump }: OutlineItemProps) {
               key={child.id}
               node={child}
               summaryByNode={summaryByNode}
+              insightsByNode={insightsByNode}
               onJump={onJump}
             />
           ))}
@@ -85,6 +104,13 @@ export default function OutlineTree({ nodes, summary, onJump }: OutlineTreeProps
     return <p className="muted">没有识别到标题层级。</p>;
   }
   const summaryByNode = new Map((summary?.sections ?? []).map((section) => [section.outlineId, section]));
+  const insightsByNode = new Map<string, DialogueInsight[]>();
+  for (const insight of summary?.dialogueInsights ?? []) {
+    if (!insight.outlineId) continue;
+    const current = insightsByNode.get(insight.outlineId) ?? [];
+    current.push(insight);
+    insightsByNode.set(insight.outlineId, current);
+  }
   return (
     <div className="outline-tree">
       {nodes.map((node) => (
@@ -92,6 +118,7 @@ export default function OutlineTree({ nodes, summary, onJump }: OutlineTreeProps
           key={node.id}
           node={node}
           summaryByNode={summaryByNode}
+          insightsByNode={insightsByNode}
           onJump={onJump}
         />
       ))}
