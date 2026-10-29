@@ -49,8 +49,13 @@ function isVisible(element: Element): boolean {
   return element.getClientRects().length > 0;
 }
 
-function isUiElement(element: Element): boolean {
-  return Boolean(element.closest(UI_SELECTOR));
+function isUiElement(element: Element, root?: Element): boolean {
+  const ui = element.closest(UI_SELECTOR);
+  if (!ui) return false;
+  // 有些站点把正文放在 .sidebar 之类的布局容器里；如果这个“UI 容器”是内容根节点的祖先，
+  // 它只是布局外壳，不应把其中的正文全部排除。
+  if (root && (ui === root || ui.contains(root))) return false;
+  return true;
 }
 
 function getText(element: Element): string {
@@ -67,6 +72,8 @@ function candidateRoots(): Element[] {
   push('article');
   push('[role="article"]');
   push('main');
+  // 一些静态站（例如 GitBook 风格页面）没有 article/main，正文包在通用 .content 里。
+  push('.post-content, .article-content, .entry-content, .markdown-body, .markdown-section, .content, #content');
   return roots;
 }
 
@@ -151,7 +158,7 @@ function addNode(
 
 export function extractOutline(root: Element): OutlineNode[] {
   const allBlocks = Array.from(root.querySelectorAll(BLOCK_SELECTOR)).filter(
-    (element) => !isUiElement(element) && isVisible(element),
+    (element) => !isUiElement(element, root) && isVisible(element),
   );
   const headings = allBlocks.filter((element) => element.matches(HEADING_SELECTOR));
 
@@ -231,7 +238,7 @@ function isNestedContentBlock(element: Element, root: Element): boolean {
 
 export function extractBlocks(root: Element): PageBlock[] {
   const allBlocks = Array.from(root.querySelectorAll(FULL_BLOCK_SELECTOR)).filter(
-    (element) => !isUiElement(element) && isVisible(element),
+    (element) => !isUiElement(element, root) && isVisible(element),
   );
   const headings = allBlocks.filter((element) => element.matches(HEADING_SELECTOR));
   const blocks: PageBlock[] = [];
@@ -301,7 +308,7 @@ export function extractImages(root: Element): PageImage[] {
   const seen = new Set<string>();
 
   for (const image of Array.from(root.querySelectorAll('img'))) {
-    if (!isVisible(image)) continue;
+    if (!isVisible(image) || isUiElement(image, root)) continue;
     const element = image as HTMLImageElement;
     const src = absoluteImageUrl(
       element.currentSrc ||
@@ -353,7 +360,7 @@ export function extractImages(root: Element): PageImage[] {
 
 function headingElements(root: Element): Element[] {
   return Array.from(root.querySelectorAll(HEADING_SELECTOR)).filter(
-    (element) => !isUiElement(element) && isVisible(element) && getText(element),
+    (element) => !isUiElement(element, root) && isVisible(element) && getText(element),
   );
 }
 
@@ -396,7 +403,7 @@ function blockForNode(node: Node, root: Element): Element | null {
   const element = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
   if (!element) return null;
   const block = element.closest('p,li,blockquote,pre,td,th');
-  if (block && root.contains(block) && !isUiElement(block)) return block;
+  if (block && root.contains(block) && !isUiElement(block, root)) return block;
   return null;
 }
 

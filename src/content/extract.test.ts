@@ -50,6 +50,30 @@ describe('findContentRoot', () => {
     expect(root.textContent).toContain('核心概念');
     expect(root.textContent).not.toContain('首页');
   });
+
+  it('正文位于 .sidebar 布局壳内时仍然选择 .content 并抽取全文', () => {
+    document.title = '事件队列';
+    document.body.innerHTML = `
+      <div class="page sidebar">
+        <div class="content">
+          <h1>事件队列</h1>
+          <p>队列以先入先出的顺序存储一系列通知或请求，发送请求后立即返回。</p>
+          <p>处理请求的系统之后从队列中获取请求并处理，从而在时间上解耦发送者和接收者。</p>
+          <figure>
+            <img src="/event-queue.png" alt="事件队列示意图" width="640" height="320" />
+            <figcaption>图 1：事件队列</figcaption>
+          </figure>
+        </div>
+      </div>
+    `;
+    const root = findContentRoot();
+    expect(root.classList.contains('content')).toBe(true);
+    const page = buildPageContext();
+    expect(page.wordCount).toBeGreaterThan(40);
+    expect(page.blocks?.some((block) => block.text.includes('先入先出'))).toBe(true);
+    expect(page.images).toHaveLength(1);
+    expect(page.images?.[0].caption).toBe('图 1：事件队列');
+  });
 });
 
 describe('extractBlocks', () => {
