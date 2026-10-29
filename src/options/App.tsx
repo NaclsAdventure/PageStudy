@@ -500,7 +500,7 @@ export default function OptionsApp() {
                 推理强度会按服务商分别映射：OpenAI 兼容接口使用 reasoning_effort，Anthropic 使用 thinking
                 budget，Gemini 使用 thinkingConfig。它只影响模型思考预算，不改变网页内容和本地记录。
               </p>
-              <p className="muted">聊天、逐节总结共用当前服务商配置；后续可以拆成独立任务模型。</p>
+              <p className="muted">聊天、生成知识卡共用当前服务商配置；后续可以拆成独立任务模型。</p>
             </section>
           </div>
         ) : null}
@@ -548,7 +548,7 @@ export default function OptionsApp() {
                         })
                       }
                     />
-                    记录或总结保存后，自动创建/追加到默认目标
+                    记录或知识卡保存后，自动创建/追加到默认目标
                   </label>
                   <small>失败会保留队列并退避重试；扩展启动时补传。</small>
                 </div>
@@ -657,7 +657,7 @@ npm run bridge`}</pre>
             <section className="panel subtle-panel">
               <h2>自动同步的边界</h2>
               <p>
-                保存学习记录或总结后会立即尝试同步；失败任务写入 chrome.storage.local，并用 alarm
+                保存学习记录或知识卡后会立即尝试同步；失败任务写入 chrome.storage.local，并用 alarm
                 退避重试，浏览器下次启动时继续补传。
               </p>
               <p className="muted">
@@ -857,7 +857,7 @@ npm run bridge`}</pre>
               <div className="panel-heading">
                 <div>
                   <h2>本地记录</h2>
-                  <p>记录、对话、大纲和总结保存在 IndexedDB；API Key 保存在 chrome.storage.local。</p>
+                  <p>记录、对话、正文快照和知识卡保存在 IndexedDB；API Key 保存在 chrome.storage.local。</p>
                 </div>
                 <span className="big-count">{recordCount ?? '—'}</span>
               </div>
@@ -886,11 +886,12 @@ npm run bridge`}</pre>
             <section className="panel subtle-panel">
               <h2>数据边界</h2>
               <p>
-                扩展不会自动上传整页内容。聊天时只发送页面标题、URL、大纲标题和必要段落，以及你选中的上下文；
-                生成总结时会发送大纲和对话。API Key 只在后台 Service Worker 中使用。
+                打开普通网页时，扩展会读取正文、图注和图片地址，作为本地快照与上下文。聊天按侧栏的“上下文范围”发送：
+                智能全文只带相关片段，始终全文发送全文，仅选段只带选中段落；生成知识卡时会发送正文、图注和对话摘要。
+                API Key 只在后台 Service Worker 读取，网页里的内容不会被当成指令执行。
               </p>
               <p className="muted">
-                当前版本不做云同步。网页改版或删除后，记录中的大纲、总结和笔记仍保存在本地，但点击锚点可能无法回到原文。
+                当前版本不做云同步。网页改版或删除后，记录中的正文快照、知识卡和笔记仍保存在本地，但点击锚点可能无法回到原文。
               </p>
             </section>
           </div>

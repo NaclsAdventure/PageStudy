@@ -40,7 +40,19 @@ describe('normalizeSettings', () => {
     expect(settings.feishu.parentToken).toBe('fld123');
     expect(settings.documents.defaultTarget).toBe('feishu');
     expect(settings.documents.autoSync).toBe(false);
+    expect(settings.context.mode).toBe('smart');
+    expect(settings.context.includeImages).toBe(true);
     expect(settings.customSkills[0].sourceUrl).toBeUndefined();
+  });
+
+  it('归一化上下文范围与图片设置', () => {
+    const settings = normalizeSettings({
+      context: { mode: 'full', includeImages: false },
+    });
+    expect(settings.context).toEqual({ mode: 'full', includeImages: false });
+
+    const invalid = normalizeSettings({ context: { mode: 'not-a-mode', includeImages: 'yes' } });
+    expect(invalid.context).toEqual({ mode: 'smart', includeImages: true });
   });
 
   it('归一化文档目标与同步设置', () => {
@@ -86,6 +98,7 @@ describe('toPublicSettings', () => {
     expect(publicSettings.feishu.parentToken).toBe('fld-public');
     expect(publicSettings.feishu.hasToken).toBe(true);
     expect(publicSettings.documents).toEqual(settings.documents);
+    expect(publicSettings.context).toEqual(settings.context);
     expect(JSON.stringify(publicSettings)).not.toContain('bridge-secret');
   });
 });

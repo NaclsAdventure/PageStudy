@@ -111,6 +111,43 @@ describe('generateSummary', () => {
     expect(summary.model).toBe('test-model');
   });
 
+  it('解析知识卡扩展字段并去重问答沉淀', async () => {
+    mockSummary({
+      overview: '全文概览。',
+      thesis: '核心主张。',
+      quickRead: ['结论一', '结论二'],
+      tags: [],
+      sections: [],
+      keyConcepts: [],
+      argumentMap: [
+        { claim: '主张', evidence: '证据', assumptions: '假设', boundary: '边界' },
+        { claim: '', evidence: '无效' },
+      ],
+      dialogueInsights: [
+        {
+          question: '问题一',
+          insight: '结论一',
+          evidence: ['[§n1]'],
+          concepts: ['概念'],
+        },
+        {
+          question: '问题一',
+          insight: '结论一',
+          evidence: [],
+          concepts: [],
+        },
+      ],
+    });
+    const summary = await generateSummary(request(), provider);
+    expect(summary.thesis).toBe('核心主张。');
+    expect(summary.quickRead).toEqual(['结论一', '结论二']);
+    expect(summary.argumentMap).toEqual([
+      { claim: '主张', evidence: '证据', assumptions: '假设', boundary: '边界' },
+    ]);
+    expect(summary.dialogueInsights).toHaveLength(1);
+    expect(summary.dialogueInsights?.[0].evidence).toEqual(['[§n1]']);
+  });
+
   it('允许模型输出带 Markdown 代码围栏的 JSON', async () => {
     mockContent(
       ['```json', JSON.stringify({ overview: '概览。', tags: [], sections: [], keyConcepts: [] }), '```'].join(
@@ -127,12 +164,14 @@ describe('generateSummary', () => {
     await expect(generateSummary(request(), provider)).rejects.toThrow('overview');
   });
 
-  it('没有大纲时直接报错，不调用模型', async () => {
+  it('没有正文时直接报错，不调用模型', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     const input = request();
     input.page.outline = [];
-    await expect(generateSummary(input, provider)).rejects.toThrow('大纲');
+    input.page.blocks = [];
+    input.page.wordCount = 0;
+    await expect(generateSummary(input, provider)).rejects.toThrow('正文');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

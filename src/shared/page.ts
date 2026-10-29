@@ -21,7 +21,7 @@ interface ManualPageInput {
 
 /**
  * 浏览器内置页（chrome://、edge://、扩展页等）不能被内容脚本注入。
- * 这里用用户手动摘录的正文构造一个最小页面上下文，后续仍可走总结与 Wiki。
+ * 这里用用户手动摘录的正文构造一个最小页面上下文，后续仍可走知识卡与 Wiki。
  */
 export function createManualPage({ url, title, text }: ManualPageInput): PageContext {
   const cleanText = normalizeWhitespace(text);

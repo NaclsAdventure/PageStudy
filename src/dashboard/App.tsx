@@ -438,7 +438,7 @@ export default function DashboardApp() {
             {!loading && filtered.length === 0 ? (
               <div className="empty-hint">
                 <strong>还没有匹配的记录</strong>
-                <span>打开一篇博客，在侧栏点击“记录并总结”。</span>
+                <span>打开一篇博客，在侧栏点击“记录本页”。</span>
               </div>
             ) : null}
             {filtered.map((record) => (
@@ -485,7 +485,7 @@ export default function DashboardApp() {
                     <span>{flattenOutline(selected.page.outline).length} 个标题</span>
                     <span>{selected.page.wordCount.toLocaleString()} 字</span>
                     <span className={`status-label status-${selected.status}`}>
-                      {selected.status === 'ready' ? '已总结' : selected.status === 'error' ? '总结失败' : '已捕获'}
+                      {selected.status === 'ready' ? '已生成知识卡' : selected.status === 'error' ? '知识卡生成失败' : '已保存原文'}
                     </span>
                   </div>
                 </div>
@@ -542,12 +542,19 @@ export default function DashboardApp() {
                 <div className="detail-main">
                   <section className="detail-section">
                     <div className="detail-section-heading">
-                      <h2>内容概览</h2>
+                      <h2>30 秒速读</h2>
                       {selected.summary ? <span>{selected.summary.model}</span> : null}
                     </div>
                     {selected.summary ? (
                       <>
-                        <p className="overview">{selected.summary.overview}</p>
+                        <p className="overview">{selected.summary.thesis || selected.summary.overview}</p>
+                        {selected.summary.quickRead && selected.summary.quickRead.length > 0 ? (
+                          <ul className="quick-read">
+                            {selected.summary.quickRead.map((point) => (
+                              <li key={point}>{point}</li>
+                            ))}
+                          </ul>
+                        ) : null}
                         <div className="tag-row">
                           {selected.summary.tags.map((tag) => (
                             <span className="tag" key={tag}>
@@ -555,9 +562,22 @@ export default function DashboardApp() {
                             </span>
                           ))}
                         </div>
+                        {selected.summary.argumentMap && selected.summary.argumentMap.length > 0 ? (
+                          <div className="argument-list">
+                            <div className="concept-grid-label">核心论证</div>
+                            {selected.summary.argumentMap.map((argument, index) => (
+                              <div className="argument-card" key={`${argument.claim}-${index}`}>
+                                <strong>{argument.claim}</strong>
+                                {argument.evidence ? <p><span>证据</span>{argument.evidence}</p> : null}
+                                {argument.assumptions ? <p><span>假设</span>{argument.assumptions}</p> : null}
+                                {argument.boundary ? <p><span>边界</span>{argument.boundary}</p> : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                         {selected.summary.keyConcepts.length > 0 ? (
                           <div className="concept-grid">
-                            <div className="concept-grid-label">关键概念</div>
+                            <div className="concept-grid-label">概念卡</div>
                             {selected.summary.keyConcepts.map((concept) => (
                               <div className="concept-card" key={concept.term}>
                                 <strong>{concept.term}</strong>
@@ -566,24 +586,37 @@ export default function DashboardApp() {
                             ))}
                           </div>
                         ) : null}
+                        {selected.summary.dialogueInsights && selected.summary.dialogueInsights.length > 0 ? (
+                          <div className="insight-list">
+                            <div className="concept-grid-label">问答沉淀</div>
+                            {selected.summary.dialogueInsights.map((insight, index) => (
+                              <div className="insight-card" key={`${insight.question}-${index}`}>
+                                <strong>{insight.question}</strong>
+                                <p>{insight.insight}</p>
+                                {insight.evidence.length > 0 ? <span>依据：{insight.evidence.join('；')}</span> : null}
+                                {insight.concepts.length > 0 ? <span>概念：{insight.concepts.join('、')}</span> : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                       </>
                     ) : (
-                      <p className="muted">还没有生成总结；可以回到原网页的侧栏生成。</p>
+                      <p className="muted">还没有生成知识卡；可以回到原网页的侧栏生成。</p>
                     )}
                   </section>
 
-                  {selected.selections.length > 0 ? (
+                  {selected.page.images && selected.page.images.length > 0 ? (
                     <section className="detail-section">
                       <div className="detail-section-heading">
-                        <h2>选中的原文</h2>
-                        <span>{selected.selections.length} 段</span>
+                        <h2>图表与图片</h2>
+                        <span>{selected.page.images.length} 张</span>
                       </div>
-                      <div className="selection-list">
-                        {selected.selections.map((item, index) => (
-                          <blockquote className="selection-card" key={`${item.anchor}-${index}`}>
-                            {item.headingPath.length > 0 ? <span>{item.headingPath.join(' / ')}</span> : null}
-                            <p>{item.text}</p>
-                          </blockquote>
+                      <div className="dashboard-image-grid">
+                        {selected.page.images.map((image) => (
+                          <figure className="dashboard-image-card" key={image.id}>
+                            <img src={image.src} alt={image.alt || image.caption} loading="lazy" />
+                            <figcaption>{image.caption || image.alt || '正文图片'}</figcaption>
+                          </figure>
                         ))}
                       </div>
                     </section>
@@ -591,7 +624,7 @@ export default function DashboardApp() {
 
                   <section className="detail-section">
                     <div className="detail-section-heading">
-                      <h2>大纲树</h2>
+                      <h2>章节笔记</h2>
                       <span>点击标题只会在原文中定位</span>
                     </div>
                     <OutlineTree
@@ -606,7 +639,7 @@ export default function DashboardApp() {
 
                 <aside className="detail-aside">
                   <section className="aside-section">
-                    <h2>我的笔记</h2>
+                    <h2>我的判断</h2>
                     <textarea
                       className="notes-area"
                       value={selected.notes}
@@ -698,7 +731,7 @@ export default function DashboardApp() {
             <div className="detail-empty">
               <span>▤</span>
               <h1>选择一条学习记录</h1>
-              <p>左侧会显示你保存过的网页、总结和标签。</p>
+              <p>左侧会显示你保存过的网页、知识卡和标签。</p>
             </div>
           )}
         </main>

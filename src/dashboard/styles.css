@@ -469,6 +469,100 @@ a {
   white-space: pre-wrap;
 }
 
+.quick-read {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #3c4d46;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.quick-read li + li {
+  margin-top: 3px;
+}
+
+.argument-list,
+.insight-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 13px;
+}
+
+.argument-card,
+.insight-card {
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fbfdfb;
+}
+
+.argument-card strong,
+.insight-card strong {
+  display: block;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.argument-card p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.argument-card p span {
+  display: inline-block;
+  margin-right: 5px;
+  color: var(--teal-dark);
+  font-weight: 700;
+}
+
+.insight-card p {
+  margin: 5px 0;
+  color: #3c4d46;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.insight-card > span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.dashboard-image-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.dashboard-image-card {
+  margin: 0;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+}
+
+.dashboard-image-card img {
+  width: 100%;
+  max-height: 150px;
+  object-fit: cover;
+  border-radius: 5px;
+}
+
+.dashboard-image-card figcaption {
+  overflow: hidden;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .tag-row {
   display: flex;
   flex-wrap: wrap;

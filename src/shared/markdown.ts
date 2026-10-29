@@ -1,4 +1,4 @@
-import type { OutlineNode, StudyRecord, SummarySection } from './types';
+import type { OutlineNode, PageImage, StudyRecord, SummarySection } from './types';
 import { formatDate, truncate } from './utils';
 
 function summarizeSection(section: SummarySection): string[] {
@@ -34,6 +34,22 @@ function walkOutline(
   }
 }
 
+function selectedImages(record: StudyRecord): PageImage[] {
+  const images = record.page.images ?? [];
+  if (!record.selectedImageIds) return images;
+  const selected = new Set(record.selectedImageIds);
+  return images.filter((image) => selected.has(image.id));
+}
+
+function imageCaption(image: PageImage): string {
+  return (image.caption || image.alt || '正文图片').replace(/\s+/g, ' ').trim();
+}
+
+function imageMarkdown(image: PageImage): string {
+  const alt = imageCaption(image).replace(/[\[\]]/g, '\\$&');
+  return `![${alt}](${image.src})`;
+}
+
 export function recordToMarkdown(record: StudyRecord): string {
   const lines: string[] = [];
   const page = record.page;
@@ -45,57 +61,85 @@ export function recordToMarkdown(record: StudyRecord): string {
   if (page.publishedAt) lines.push(`> 发布时间：${page.publishedAt}`);
   lines.push(`> 记录时间：${formatDate(record.createdAt)}`);
   lines.push(`> 内容哈希：\`${page.contentHash}\``);
-
   if (record.summary) {
+    lines.push(`> 生成模型：${record.summary.model}`);
+  }
+
+  const summary = record.summary;
+  lines.push('');
+  lines.push('## 30 秒速读');
+  lines.push('');
+  lines.push((summary?.thesis || summary?.overview || '（还没有生成知识卡）').trim());
+  if (summary?.quickRead && summary.quickRead.length > 0) {
     lines.push('');
-    lines.push('## 内容概览');
+    for (const point of summary.quickRead) lines.push(`- ${point}`);
+  }
+  if (summary?.tags && summary.tags.length > 0) {
     lines.push('');
-    lines.push(record.summary.overview.trim() || '（暂无概览）');
-    if (record.summary.tags.length > 0) {
+    lines.push(`标签：${summary.tags.map((tag) => `#${tag}`).join(' ')}`);
+  }
+
+  if (summary?.argumentMap && summary.argumentMap.length > 0) {
+    lines.push('');
+    lines.push('## 核心论证');
+    summary.argumentMap.forEach((argument, index) => {
       lines.push('');
-      lines.push(`标签：${record.summary.tags.map((tag) => `#${tag}`).join(' ')}`);
-    }
-    if (record.summary.keyConcepts.length > 0) {
-      lines.push('');
-      lines.push('### 关键概念');
-      for (const concept of record.summary.keyConcepts) {
-        lines.push(`- **${concept.term}**：${concept.explanation}`);
-      }
+      lines.push(`### ${index + 1}. ${argument.claim}`);
+      if (argument.evidence) lines.push(`- 证据：${argument.evidence}`);
+      if (argument.assumptions) lines.push(`- 隐含假设：${argument.assumptions}`);
+      if (argument.boundary) lines.push(`- 适用边界：${argument.boundary}`);
+    });
+  }
+
+  if (summary?.keyConcepts && summary.keyConcepts.length > 0) {
+    lines.push('');
+    lines.push('## 概念卡');
+    for (const concept of summary.keyConcepts) {
+      lines.push(`- **${concept.term}**：${concept.explanation}`);
     }
   }
 
   if (page.outline.length > 0) {
     lines.push('');
-    lines.push('## 网页大纲与逐节笔记');
-    const summaryMap = new Map((record.summary?.sections ?? []).map((section) => [section.outlineId, section]));
+    lines.push('## 章节笔记');
+    const summaryMap = new Map((summary?.sections ?? []).map((section) => [section.outlineId, section]));
     walkOutline(page.outline, 0, summaryMap, lines);
   }
 
-  if (record.selections.length > 0) {
+  const images = selectedImages(record);
+  if (images.length > 0) {
     lines.push('');
-    lines.push('## 选中的原文');
-    for (const selection of record.selections) {
+    lines.push('## 图表与图片');
+    for (const image of images) {
+      const caption = imageCaption(image);
+      const path = image.headingPath.length > 0 ? image.headingPath.join(' / ') : '页面开头';
       lines.push('');
-      if (selection.headingPath.length > 0) lines.push(`> ${selection.headingPath.join(' / ')}`);
-      lines.push(`> ${selection.text.replace(/\n+/g, ' ')}`);
+      lines.push(imageMarkdown(image));
+      lines.push(`> ${caption}`);
+      lines.push(`> 位置：${path} [§${image.anchor}]`);
     }
   }
 
-  if (record.messages.length > 0) {
+  if (summary?.dialogueInsights && summary.dialogueInsights.length > 0) {
     lines.push('');
-    lines.push('## 对话摘录');
-    for (const message of record.messages) {
-      if (!message.content.trim()) continue;
+    lines.push('## 问答沉淀');
+    for (const insight of summary.dialogueInsights) {
       lines.push('');
-      lines.push(`**${message.role === 'user' ? '我' : '助教'}：**`);
+      lines.push(`### ${insight.question}`);
       lines.push('');
-      lines.push(message.content.trim());
+      lines.push(insight.insight);
+      if (insight.evidence.length > 0) {
+        lines.push('', `依据：${insight.evidence.join('；')}`);
+      }
+      if (insight.concepts.length > 0) {
+        lines.push('', `相关概念：${insight.concepts.join('、')}`);
+      }
     }
   }
 
   if (record.notes.trim()) {
     lines.push('');
-    lines.push('## 我的笔记');
+    lines.push('## 我的判断');
     lines.push('');
     lines.push(record.notes.trim());
   }
@@ -108,7 +152,7 @@ export function recordToMarkdown(record: StudyRecord): string {
   lines.push('');
   lines.push('---');
   lines.push('');
-  lines.push('由 PageStudy 生成。原文可能随时间变化，以上大纲和总结是记录时的快照。');
+  lines.push('由 PageStudy 生成；AI 内容为草稿，引用请回到原文核对。原文可能随时间变化，以上是记录时的快照。');
   return lines.join('\n');
 }
 
@@ -117,22 +161,32 @@ export function recordToMarkdown(record: StudyRecord): string {
  */
 export function recordToAppendMarkdown(record: StudyRecord, now = Date.now()): string {
   const lines: string[] = ['', '---', '', `## 追加更新 · ${formatDate(now)}`];
-  if (record.summary) {
-    lines.push('', '### 内容概览', '', record.summary.overview.trim() || '（暂无概览）');
-    if (record.summary.keyConcepts.length > 0) {
-      lines.push('', '### 关键概念');
-      for (const concept of record.summary.keyConcepts) {
+  const summary = record.summary;
+  if (summary) {
+    lines.push('', '### 30 秒速读', '', (summary.thesis || summary.overview).trim());
+    if (summary.quickRead && summary.quickRead.length > 0) {
+      lines.push(...summary.quickRead.map((point) => `- ${point}`));
+    }
+    if (summary.keyConcepts.length > 0) {
+      lines.push('', '### 概念卡');
+      for (const concept of summary.keyConcepts) {
         lines.push(`- **${concept.term}**：${concept.explanation}`);
+      }
+    }
+    if (summary.dialogueInsights && summary.dialogueInsights.length > 0) {
+      lines.push('', '### 问答沉淀');
+      for (const insight of summary.dialogueInsights) {
+        lines.push(`- ${insight.question}：${insight.insight}`);
       }
     }
   }
   if (record.notes.trim()) {
-    lines.push('', '### 我的笔记', '', record.notes.trim());
+    lines.push('', '### 我的判断', '', record.notes.trim());
   }
   if (record.tags.length > 0) {
     lines.push('', `记录标签：${record.tags.map((tag) => `#${tag}`).join(' ')}`);
   }
-  if (lines.length === 4) lines.push('', '（本次没有新增总结或笔记）');
+  if (lines.length === 4) lines.push('', '（本次没有新增知识卡或笔记）');
   return lines.join('\n');
 }
 

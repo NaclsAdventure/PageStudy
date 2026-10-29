@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   ChatRequest,
   BridgeHealth,
+  ContextMode,
   DocumentTarget,
   PageContext,
   PageSummary,
@@ -87,6 +88,7 @@ export default function App() {
   const [pageError, setPageError] = useState('');
   const [selection, setSelection] = useState<SelectionContext | null>(null);
   const [contexts, setContexts] = useState<SelectionContext[]>([]);
+  const [contextMode, setContextMode] = useState<ContextMode>('smart');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
@@ -195,6 +197,7 @@ export default function App() {
       if (!response.ok || !response.settings) throw new Error(response.error ?? '读取设置失败');
       setSettings(response.settings);
       setSettingsError('');
+      setContextMode(response.settings.context?.mode ?? 'smart');
       const nextSkills = getAllSkills(response.settings.customSkills);
       setSkills(nextSkills);
       setSkillId((current) => (nextSkills.some((skill) => skill.id === current) ? current : 'general'));
@@ -406,18 +409,28 @@ export default function App() {
 
   const provider = activeProviderOf(settings);
   const hasApiKey = Boolean(provider?.hasApiKey);
+  const indexedChars = page?.wordCount ?? 0;
+  const imageCount = page?.images?.length ?? 0;
+  const contextReady = Boolean(page?.blocks?.length || page?.outline.length);
 
-  const addSelection = () => {
-    if (!selection) return;
-    const next = mergeSelections(contextsRef.current, selection);
-    if (next.length === contextsRef.current.length) {
-      showNotice('这段内容已经在上下文里了。', 'info');
-      return;
-    }
-    contextsRef.current = next;
-    setContexts(next);
-    if (recordRef.current) patchRecord({ selections: next });
-    showNotice('已加入上下文。', 'success');
+  const activeSelections = (): SelectionContext[] => {
+    if (!selection) return contextsRef.current;
+    return mergeSelections(contextsRef.current, selection);
+  };
+
+  const changeContextMode = (mode: ContextMode) => {
+    const previous = contextMode;
+    setContextMode(mode);
+    void sendRuntimeMessage({
+      type: 'PS_SAVE_CONTEXT_SETTINGS',
+      context: {
+        mode,
+        includeImages: settings?.context.includeImages ?? true,
+      },
+    }).catch(() => {
+      setContextMode(previous);
+      showNotice('上下文设置保存失败，请重试。', 'error');
+    });
   };
 
   const removeSelection = (index: number) => {
@@ -425,6 +438,16 @@ export default function App() {
     contextsRef.current = next;
     setContexts(next);
     if (recordRef.current) patchRecord({ selections: next });
+  };
+
+  const toggleImage = (imageId: string) => {
+    const current = recordRef.current;
+    if (!current) return;
+    const allIds = (current.page.images ?? []).map((image) => image.id);
+    const selected = new Set(current.selectedImageIds ?? allIds);
+    if (selected.has(imageId)) selected.delete(imageId);
+    else selected.add(imageId);
+    patchRecord({ selectedImageIds: allIds.filter((id) => selected.has(id)) });
   };
 
   const ensurePort = useCallback((): chrome.runtime.Port => {
@@ -516,10 +539,12 @@ export default function App() {
       requestId,
       messages: history,
       page,
-      selections: contextsRef.current,
+      selections: activeSelections(),
       skill,
       language: settings?.outputLanguage ?? '中文',
       model: provider?.model ?? '',
+      contextMode,
+      query: text,
     };
     applyMessages((previous) => [...previous, userMessage, assistantMessage]);
     setInput('');
@@ -592,7 +617,12 @@ export default function App() {
       page: freshPage,
       summary: isSameContent ? existing?.summary ?? null : null,
       messages: messagesRef.current,
-      selections: contextsRef.current,
+      selections: activeSelections(),
+      selectedImageIds: isSameContent
+        ? existing?.selectedImageIds
+        : settings?.context.includeImages === false
+          ? []
+          : (freshPage.images ?? []).map((image) => image.id),
       notes: existing?.notes ?? '',
       tags: existing?.tags ?? [],
       status: isSameContent && existing?.summary ? 'ready' : 'captured',
@@ -614,8 +644,8 @@ export default function App() {
       showNotice('请先在设置页配置模型 API Key。', 'error');
       return;
     }
-    if (!target.page.outline.length) {
-      showNotice('没有识别到可总结的大纲。', 'error');
+    if (!target.page.blocks?.some((block) => block.text.trim()) && !target.page.outline.length) {
+      showNotice('没有识别到可用于知识卡的正文。', 'error');
       return;
     }
     setSummaryLoading(true);
@@ -628,7 +658,7 @@ export default function App() {
     };
     try {
       const response = await sendRuntimeMessage<SummarizeResponse>({ type: 'PS_SUMMARIZE', request });
-      if (!response.ok || !response.summary) throw new Error(response.error ?? '生成总结失败');
+      if (!response.ok || !response.summary) throw new Error(response.error ?? '生成知识卡失败');
       const next: StudyRecord = {
         ...target,
         summary: response.summary,
@@ -640,7 +670,7 @@ export default function App() {
       await persistRecord(next);
       void queueAutoSync(next);
       void queueWikiAutoSync();
-      showNotice('总结已保存。', 'success');
+      showNotice('知识卡已保存。', 'success');
     } catch (error) {
       const next: StudyRecord = {
         ...target,
@@ -934,36 +964,57 @@ export default function App() {
           <div className="context-bar">
             <div className="context-head">
               <span>上下文</span>
-              <span className="context-count">{contexts.length}/4</span>
+              <select
+                className="context-mode-select"
+                aria-label="上下文范围"
+                value={contextMode}
+                onChange={(event) => changeContextMode(event.target.value as ContextMode)}
+                disabled={streaming}
+              >
+                <option value="smart">智能全文</option>
+                <option value="full">始终全文</option>
+                <option value="selection">仅选段</option>
+                <option value="off">关闭</option>
+              </select>
             </div>
+            <div className="context-meta">
+              {contextReady
+                ? `已索引 ${indexedChars.toLocaleString('zh-CN')} 字${imageCount > 0 ? ` · ${imageCount} 张图` : ''}${
+                    page?.tokenEstimate ? ` · 约 ${page.tokenEstimate.toLocaleString('zh-CN')} tokens` : ''
+                  }`
+                : '尚未读取到正文'}
+            </div>
+            {contextMode === 'off' ? (
+              <p className="context-empty">网页正文不会发送；选中段落仍可作为聚焦。</p>
+            ) : contextMode === 'selection' ? (
+              <p className="context-empty">只发送当前聚焦段和页面简报，不发送全文。</p>
+            ) : null}
             {contexts.length > 0 ? (
               <div className="context-chips">
                 {contexts.map((item, index) => (
                   <span className="context-chip" key={`${item.anchor}-${index}`} title={item.text}>
                     <span>{truncate(item.text, 30)}</span>
-                    <button type="button" onClick={() => removeSelection(index)} aria-label="移除上下文">
+                    <button type="button" onClick={() => removeSelection(index)} aria-label="移除固定上下文">
                       ×
                     </button>
                   </span>
                 ))}
               </div>
-            ) : (
-              <p className="context-empty">在网页中选中一段文字，然后点“加入上下文”。</p>
-            )}
-            {selection && !contexts.some((item) => item.text === selection.text) ? (
-              <div className="selection-preview">
+            ) : null}
+            {selection ? (
+              <div className="selection-preview focus-preview">
                 <div>
-                  <span className="selection-label">当前选中</span>
+                  <span className="selection-label">当前聚焦 · 自动带入</span>
                   <p>{truncate(selection.text, 160)}</p>
                   {selection.headingPath.length > 0 ? (
                     <span className="selection-path">{selection.headingPath.join(' / ')}</span>
                   ) : null}
                 </div>
-                <button type="button" className="small-button" onClick={addSelection}>
-                  加入上下文
-                </button>
+                <span className="focus-badge">聚焦</span>
               </div>
-            ) : null}
+            ) : (
+              <p className="context-empty">直接提问即可；在网页中选中文字会自动聚焦。</p>
+            )}
             <div className="skill-row">
               <label htmlFor="skill-select">Skill</label>
               <select
@@ -987,7 +1038,7 @@ export default function App() {
               <div className="chat-empty">
                 <div className="empty-mark">“</div>
                 <h2>把文章变成自己的理解</h2>
-                <p>选中一段话，或直接提问。PageStudy 会带上当前网页大纲；记录本页后还能生成逐节总结。</p>
+                <p>直接提问即可。全文会在提问时按上下文范围自动带入；选中段落会自动聚焦，记录后生成知识卡。</p>
                 <div className="prompt-suggestions">
                   {['这段话的核心论点是什么？', '用一个例子解释这个概念', '作者有哪些没有证明的假设？'].map(
                     (prompt) => (
@@ -1049,7 +1100,7 @@ export default function App() {
                   sendChat();
                 }
               }}
-              placeholder="基于当前网页或选中段落提问…"
+              placeholder="基于全文提问；选中文字会自动聚焦…"
               rows={2}
               disabled={streaming}
             />
@@ -1093,6 +1144,7 @@ export default function App() {
               onNotesChange={(notes) => patchRecord({ notes })}
               onAddTag={addTag}
               onRemoveTag={removeTag}
+              onToggleImage={toggleImage}
               onOpenDashboard={() => openDashboard()}
               onOpenWiki={openWiki}
               onOpenOptions={openOptions}
@@ -1100,11 +1152,11 @@ export default function App() {
           ) : (
             <div className="record-empty">
               <div className="record-empty-icon">▤</div>
-              <h2>{manualMode ? '手动摘录浏览器内置页' : '记录本页，形成学习档案'}</h2>
+              <h2>{manualMode ? '手动摘录浏览器内置页' : '记录本页，生成知识卡'}</h2>
               <p>
                 {manualMode
-                  ? '浏览器内置页面不能被扩展自动读取。把标题、地址和要学习的段落粘贴到下面，PageStudy 仍会保存记录、生成总结并归入 Wiki。'
-                  : '点击后先保存网页链接、大纲和当前对话，再按大纲生成逐节总结。网页以后变化，记录仍保留当时的快照。'}
+                  ? '浏览器内置页面不能被扩展自动读取。把标题、地址和要学习的段落粘贴到下面，PageStudy 仍会保存记录、生成知识卡并归入 Wiki。'
+                  : '点击“记录本页”会读取全文和图片，一次生成速读、核心论证、概念卡、章节笔记和问答沉淀。网页以后变化，记录仍保留当时的快照。'}
               </p>
               {manualMode ? (
                 <ManualCaptureFields
@@ -1127,13 +1179,13 @@ export default function App() {
               ) : null}
               <div className="record-actions">
                 <button type="button" className="primary-button" onClick={() => void recordPage(true)}>
-                  {manualMode ? '记录摘录并总结' : '记录并总结'}
+                  {manualMode ? '记录摘录并生成知识卡' : '记录本页'}
                 </button>
                 <button type="button" className="secondary-button" onClick={() => void recordPage(false)}>
-                  仅记录
+                  仅保存原文
                 </button>
               </div>
-              {!hasApiKey ? <p className="muted">配置 API Key 后才能生成 AI 总结，但“仅记录”不需要模型。</p> : null}
+              {!hasApiKey ? <p className="muted">配置 API Key 后会自动生成知识卡；“仅保存原文”不需要模型。</p> : null}
             </div>
           )}
         </main>
@@ -1167,6 +1219,7 @@ interface RecordViewProps {
   onNotesChange: (notes: string) => void;
   onAddTag: () => void;
   onRemoveTag: (tag: string) => void;
+  onToggleImage: (imageId: string) => void;
   onOpenDashboard: () => void;
   onOpenWiki: () => void;
   onOpenOptions: () => void;
@@ -1195,6 +1248,7 @@ function RecordView({
   onNotesChange,
   onAddTag,
   onRemoveTag,
+  onToggleImage,
   onOpenDashboard,
   onOpenWiki,
   onOpenOptions,
@@ -1208,10 +1262,14 @@ function RecordView({
         : Boolean(bridgeHealth?.markdown);
   const statusText =
     record.status === 'ready'
-      ? '已总结'
+      ? '已生成知识卡'
       : record.status === 'error'
-        ? '总结失败'
-        : '已捕获';
+        ? '知识卡生成失败'
+        : '已保存原文';
+  const pageImages = record.page.images ?? [];
+  const selectedImages = new Set(
+    record.selectedImageIds ?? pageImages.map((image) => image.id),
+  );
   return (
     <div className="record-view">
       <div className="record-head">
@@ -1239,7 +1297,7 @@ function RecordView({
           onClick={onResummarize}
           disabled={summaryLoading}
         >
-          {summaryLoading ? '总结中…' : summary ? '重新总结' : '生成总结'}
+          {summaryLoading ? '精炼中…' : summary ? '重新精炼' : '生成知识卡'}
         </button>
         <button type="button" className="secondary-button" onClick={onOpenDashboard}>
           记录库
@@ -1325,66 +1383,139 @@ function RecordView({
       </section>
 
       {summary ? (
-        <section className="record-section">
-          <div className="section-heading">
-            <span>内容概览</span>
-            <span>{summary.model}</span>
-          </div>
-          <p className="summary-overview">{summary.overview}</p>
-          {summary.tags.length > 0 ? (
-            <div className="tag-row">
-              {summary.tags.map((tag) => (
-                <span className="tag" key={tag}>
-                  #{tag}
-                </span>
-              ))}
+        <>
+          <section className="record-section">
+            <div className="section-heading">
+              <span>30 秒速读</span>
+              <span>{summary.model}</span>
             </div>
+            <p className="summary-overview">{summary.thesis || summary.overview}</p>
+            {summary.quickRead && summary.quickRead.length > 0 ? (
+              <ul className="quick-read">
+                {summary.quickRead.map((point) => (
+                  <li key={point}>{point}</li>
+                ))}
+              </ul>
+            ) : null}
+            {summary.tags.length > 0 ? (
+              <div className="tag-row">
+                {summary.tags.map((tag) => (
+                  <span className="tag" key={tag}>
+                    #{tag}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </section>
+
+          {summary.argumentMap && summary.argumentMap.length > 0 ? (
+            <section className="record-section">
+              <div className="section-heading">
+                <span>核心论证</span>
+                <span>主张 · 证据 · 边界</span>
+              </div>
+              <div className="argument-list">
+                {summary.argumentMap.map((argument, index) => (
+                  <div className="argument-item" key={`${argument.claim}-${index}`}>
+                    <strong>
+                      {index + 1}. {argument.claim}
+                    </strong>
+                    {argument.evidence ? <p><span>证据</span>{argument.evidence}</p> : null}
+                    {argument.assumptions ? <p><span>假设</span>{argument.assumptions}</p> : null}
+                    {argument.boundary ? <p><span>边界</span>{argument.boundary}</p> : null}
+                  </div>
+                ))}
+              </div>
+            </section>
           ) : null}
+
           {summary.keyConcepts.length > 0 ? (
-            <div className="concept-list">
-              <div className="concept-label">关键概念</div>
-              {summary.keyConcepts.map((concept) => (
-                <div className="concept-item" key={concept.term}>
-                  <strong>{concept.term}</strong>
-                  <span>{concept.explanation}</span>
-                </div>
-              ))}
-            </div>
+            <section className="record-section">
+              <div className="section-heading">
+                <span>概念卡</span>
+                <span>{summary.keyConcepts.length} 个</span>
+              </div>
+              <div className="concept-list">
+                {summary.keyConcepts.map((concept) => (
+                  <div className="concept-item" key={concept.term}>
+                    <strong>{concept.term}</strong>
+                    <span>{concept.explanation}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
           ) : null}
-        </section>
+        </>
       ) : (
         <section className="record-section">
           <div className="section-heading">
-            <span>内容概览</span>
+            <span>知识卡</span>
           </div>
           <p className="muted">
             {record.status === 'error'
-              ? '总结生成失败，可以修改模型配置后重试。'
-              : '还没有生成总结。大纲与对话已经保存，点击“生成总结”即可整理。'}
+              ? '知识卡生成失败，可以修改模型配置后重试。'
+              : '原文快照已经保存；点击上方“生成知识卡”即可整理全文、概念与对话。'}
           </p>
         </section>
       )}
 
       <section className="record-section">
         <div className="section-heading">
-          <span>大纲树</span>
+          <span>章节笔记</span>
           <span>{outline.length} 个顶层章节</span>
         </div>
         <OutlineTree nodes={outline} summary={summary} onJump={onJump} />
       </section>
 
-      {record.selections.length > 0 ? (
+      {pageImages.length > 0 ? (
         <section className="record-section">
           <div className="section-heading">
-            <span>选中的原文</span>
-            <span>{record.selections.length} 段</span>
+            <span>图表与图片</span>
+            <span>
+              保留 {selectedImages.size}/{pageImages.length}
+            </span>
           </div>
-          {record.selections.map((item, index) => (
-            <blockquote className="selection-quote" key={`${item.anchor}-${index}`}>
-              {item.headingPath.length > 0 ? <span>{item.headingPath.join(' / ')}</span> : null}
-              <p>{truncate(item.text, 240)}</p>
-            </blockquote>
-          ))}
+          <div className="image-grid">
+            {pageImages.map((image) => (
+              <label className="image-card" key={image.id}>
+                <img src={image.src} alt={image.alt || image.caption} loading="lazy" />
+                <span className="image-caption">{image.caption || image.alt || '正文图片'}</span>
+                <span className="image-meta">
+                  {image.headingPath.length > 0 ? image.headingPath.join(' / ') : '页面开头'}
+                </span>
+                <input
+                  type="checkbox"
+                  checked={selectedImages.has(image.id)}
+                  onChange={() => onToggleImage(image.id)}
+                  aria-label={`保留图片：${image.caption || image.alt || image.id}`}
+                />
+              </label>
+            ))}
+          </div>
+          <p className="muted">当前保留图片原链接和图注；导出文档时不下载图片本体。</p>
+        </section>
+      ) : null}
+
+      {summary?.dialogueInsights && summary.dialogueInsights.length > 0 ? (
+        <section className="record-section">
+          <div className="section-heading">
+            <span>问答沉淀</span>
+            <span>{summary.dialogueInsights.length} 条</span>
+          </div>
+          <div className="insight-list">
+            {summary.dialogueInsights.map((insight, index) => (
+              <div className="insight-item" key={`${insight.question}-${index}`}>
+                <strong>{insight.question}</strong>
+                <p>{insight.insight}</p>
+                {insight.evidence.length > 0 ? (
+                  <span>依据：{insight.evidence.join('；')}</span>
+                ) : null}
+                {insight.concepts.length > 0 ? (
+                  <span>概念：{insight.concepts.join('、')}</span>
+                ) : null}
+              </div>
+            ))}
+          </div>
         </section>
       ) : null}
 
@@ -1426,7 +1557,7 @@ function RecordView({
 
       <section className="record-section">
         <div className="section-heading">
-          <span>我的笔记</span>
+          <span>我的判断</span>
           <span>自动保存</span>
         </div>
         <textarea
@@ -1522,7 +1653,7 @@ function ManualCaptureFields({
         />
       </label>
       <p className="muted">
-        手动摘录不会伪装成自动读取；记录会标记为“手动摘录”，并照常进入总结、文档同步和本地 Wiki。
+        手动摘录不会伪装成自动读取；记录会标记为“手动摘录”，并照常进入知识卡、文档同步和本地 Wiki。
       </p>
     </div>
   );

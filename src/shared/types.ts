@@ -127,6 +127,7 @@ export interface Settings {
   outputLanguage: string;
   feishu: BridgeConfig;
   documents: DocumentSettings;
+  context: ContextSettings;
   customSkills: Skill[];
 }
 
@@ -150,6 +151,7 @@ export interface PublicSettings {
     hasToken: boolean;
   };
   documents: DocumentSettings;
+  context: ContextSettings;
   customSkills: Skill[];
 }
 
@@ -160,6 +162,33 @@ export interface OutlineNode {
   text: string;
   anchor: string;
   children: OutlineNode[];
+}
+
+export type ContextMode = 'smart' | 'full' | 'selection' | 'off';
+
+export interface ContextSettings {
+  mode: ContextMode;
+  includeImages: boolean;
+}
+
+export interface PageBlock {
+  id: string;
+  kind: 'heading' | 'paragraph' | 'list' | 'quote' | 'code' | 'table';
+  text: string;
+  anchor: string;
+  headingPath: string[];
+  level?: number;
+}
+
+export interface PageImage {
+  id: string;
+  src: string;
+  alt: string;
+  caption: string;
+  anchor: string;
+  headingPath: string[];
+  width: number;
+  height: number;
 }
 
 export interface PageContext {
@@ -175,6 +204,11 @@ export interface PageContext {
   capturedAt: number;
   contentHash: string;
   outline: OutlineNode[];
+  /** 全文分块；旧记录没有该字段时回退到 outline。 */
+  blocks?: PageBlock[];
+  images?: PageImage[];
+  tokenEstimate?: number;
+  extractionQuality?: 'high' | 'medium' | 'low';
   manual?: boolean;
 }
 
@@ -198,11 +232,30 @@ export interface KeyConcept {
   explanation: string;
 }
 
+export interface ArgumentPoint {
+  claim: string;
+  evidence: string;
+  assumptions: string;
+  boundary: string;
+}
+
+export interface DialogueInsight {
+  question: string;
+  insight: string;
+  evidence: string[];
+  concepts: string[];
+}
+
 export interface PageSummary {
   overview: string;
   tags: string[];
   sections: SummarySection[];
   keyConcepts: KeyConcept[];
+  /** 一句话主张；旧记录没有时回退到 overview。 */
+  thesis?: string;
+  quickRead?: string[];
+  argumentMap?: ArgumentPoint[];
+  dialogueInsights?: DialogueInsight[];
   generatedAt: number;
   model: string;
 }
@@ -221,6 +274,8 @@ export interface StudyRecord {
   summary: PageSummary | null;
   messages: ChatMessage[];
   selections: SelectionContext[];
+  /** 知识卡中保留的正文图片 ID；undefined 表示默认全部正文图。 */
+  selectedImageIds?: string[];
   notes: string;
   tags: string[];
   status: RecordStatus;
@@ -298,6 +353,8 @@ export interface ChatRequest {
   skill: Skill;
   language: string;
   model: string;
+  contextMode: ContextMode;
+  query?: string;
 }
 
 export type ChatStreamEvent =

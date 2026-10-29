@@ -2,6 +2,7 @@ import type {
   BridgeHealth,
   ChatRequest,
   ChatStreamEvent,
+  ContextSettings,
   DocumentTarget,
   DocumentWriteResult,
   FeishuWriteResult,
@@ -21,6 +22,7 @@ export type RuntimeMessage =
   | { type: 'PS_GET_SETTINGS' }
   | { type: 'PS_GET_PUBLIC_SETTINGS' }
   | { type: 'PS_SAVE_SETTINGS'; settings: Settings }
+  | { type: 'PS_SAVE_CONTEXT_SETTINGS'; context: ContextSettings }
   | { type: 'PS_FETCH_MODELS' }
   | { type: 'PS_TEST_PROVIDER' }
   | { type: 'PS_SUMMARIZE'; request: SummaryRequest }

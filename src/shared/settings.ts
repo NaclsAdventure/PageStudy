@@ -1,5 +1,7 @@
 import { getDefaultSettings, PROVIDER_DEFAULTS, PROVIDER_LABELS, SETTINGS_KEY } from './constants';
 import type {
+  ContextMode,
+  ContextSettings,
   DocumentSettings,
   DocumentTarget,
   ProviderConfig,
@@ -14,6 +16,7 @@ import type {
 const PROVIDER_IDS: ProviderId[] = ['deepseek', 'openai', 'anthropic', 'gemini', 'custom'];
 const REASONING_LEVELS: ReasoningEffort[] = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
 const DOCUMENT_TARGETS: DocumentTarget[] = ['feishu', 'notion', 'markdown'];
+const CONTEXT_MODES: ContextMode[] = ['smart', 'full', 'selection', 'off'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -77,6 +80,16 @@ function normalizeDocuments(raw: unknown, fallback: DocumentSettings): DocumentS
   };
 }
 
+function normalizeContext(raw: unknown, fallback: ContextSettings): ContextSettings {
+  if (!isRecord(raw)) return { ...fallback };
+  const mode = asString(raw.mode);
+  return {
+    mode: CONTEXT_MODES.includes(mode as ContextMode) ? (mode as ContextMode) : fallback.mode,
+    includeImages:
+      typeof raw.includeImages === 'boolean' ? raw.includeImages : fallback.includeImages,
+  };
+}
+
 export function normalizeSettings(raw: unknown): Settings {
   const base = getDefaultSettings();
   if (!isRecord(raw)) return base;
@@ -105,6 +118,7 @@ export function normalizeSettings(raw: unknown): Settings {
       parentToken: asString(rawFeishu.parentToken).trim(),
     },
     documents: normalizeDocuments(raw.documents, base.documents),
+    context: normalizeContext(raw.context, base.context),
     customSkills,
   };
 }
@@ -144,6 +158,7 @@ export function toPublicSettings(settings: Settings): PublicSettings {
       hasToken: Boolean(settings.feishu.token),
     },
     documents: { ...settings.documents },
+    context: { ...settings.context },
     customSkills: settings.customSkills,
   };
 }

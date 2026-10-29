@@ -153,6 +153,13 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
           sendResponse({ ok: true, settings });
           return;
         }
+        case 'PS_SAVE_CONTEXT_SETTINGS': {
+          const settings = await loadSettings();
+          const next = normalizeSettings({ ...settings, context: message.context });
+          await saveSettings(next);
+          sendResponse({ ok: true, context: next.context });
+          return;
+        }
         case 'PS_FETCH_MODELS': {
           const settings = await loadSettings();
           const response: ModelsResponse = { ok: true, models: [] };
@@ -392,7 +399,18 @@ chrome.runtime.onConnect.addListener((port) => {
           return;
         }
         const skill = getSkillById(getAllSkills(settings.customSkills), payload.skill.id);
-        const system = buildChatSystemPrompt(skill, payload.page, payload.selections, payload.language);
+        const query =
+          payload.query?.trim() ||
+          [...payload.messages].reverse().find((message) => message.role === 'user')?.content ||
+          '';
+        const system = buildChatSystemPrompt(
+          skill,
+          payload.page,
+          payload.selections,
+          payload.language,
+          payload.contextMode ?? settings.context.mode,
+          query,
+        );
         safePost({ type: 'start', requestId });
         await requestChat({
           provider,

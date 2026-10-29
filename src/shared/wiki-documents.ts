@@ -83,9 +83,13 @@ function renderRecordPage(page: WikiPage, index: WikiIndex): string {
   lines.push(`> 来源：${source}`);
   lines.push(`> 记录时间：${formatDate(page.updatedAt)}`);
   lines.push('');
-  lines.push('## 概览');
+  lines.push('## 30 秒速读');
   lines.push('');
-  lines.push(page.overview.trim() || '还没有内容概览。');
+  lines.push((page.thesis || page.overview).trim() || '还没有内容概览。');
+  if (page.quickRead && page.quickRead.length > 0) {
+    lines.push('');
+    for (const point of page.quickRead) lines.push(`- ${point}`);
+  }
 
   if (page.tags.length > 0) {
     lines.push('');
@@ -97,9 +101,21 @@ function renderRecordPage(page: WikiPage, index: WikiIndex): string {
     }
   }
 
+  if (page.argumentMap && page.argumentMap.length > 0) {
+    lines.push('');
+    lines.push('## 核心论证');
+    page.argumentMap.forEach((argument, index) => {
+      lines.push('');
+      lines.push(`### ${index + 1}. ${argument.claim}`);
+      if (argument.evidence) lines.push(`- 证据：${argument.evidence}`);
+      if (argument.assumptions) lines.push(`- 隐含假设：${argument.assumptions}`);
+      if (argument.boundary) lines.push(`- 适用边界：${argument.boundary}`);
+    });
+  }
+
   if (page.concepts.length > 0) {
     lines.push('');
-    lines.push('## 关键概念');
+    lines.push('## 概念卡');
     lines.push('');
     for (const concept of page.concepts) {
       const topic = index.byId.get(wikiTopicPageId('concept', concept.term));
@@ -108,9 +124,22 @@ function renderRecordPage(page: WikiPage, index: WikiIndex): string {
     }
   }
 
+  if (page.dialogueInsights && page.dialogueInsights.length > 0) {
+    lines.push('');
+    lines.push('## 问答沉淀');
+    for (const insight of page.dialogueInsights) {
+      lines.push('');
+      lines.push(`### ${insight.question}`);
+      lines.push('');
+      lines.push(insight.insight);
+      if (insight.evidence.length > 0) lines.push('', `依据：${insight.evidence.join('；')}`);
+      if (insight.concepts.length > 0) lines.push('', `相关概念：${insight.concepts.join('、')}`);
+    }
+  }
+
   if (page.sections.length > 0) {
     lines.push('');
-    lines.push('## 逐节笔记');
+    lines.push('## 章节笔记');
     for (const section of page.sections) {
       lines.push('');
       lines.push(`### ${section.title || '未命名章节'}`);
@@ -125,7 +154,7 @@ function renderRecordPage(page: WikiPage, index: WikiIndex): string {
 
   if (page.notes.trim()) {
     lines.push('');
-    lines.push('## 我的笔记');
+    lines.push('## 我的判断');
     lines.push('');
     lines.push(page.notes.trim());
   }

@@ -1,4 +1,10 @@
-import type { KeyConcept, StudyRecord, SummarySection } from './types';
+import type {
+  ArgumentPoint,
+  DialogueInsight,
+  KeyConcept,
+  StudyRecord,
+  SummarySection,
+} from './types';
 import { hashString, safeHostname, truncate } from './utils';
 
 export type WikiPageKind = 'note' | 'tag' | 'concept';
@@ -9,9 +15,13 @@ export interface WikiPage {
   title: string;
   subtitle: string;
   overview: string;
+  thesis?: string;
+  quickRead?: string[];
   tags: string[];
   concepts: KeyConcept[];
   sections: SummarySection[];
+  argumentMap?: ArgumentPoint[];
+  dialogueInsights?: DialogueInsight[];
   notes: string;
   recordId?: string;
   sourceUrl?: string;
@@ -65,7 +75,9 @@ function fallbackOverview(record: StudyRecord): string {
     .map((node) => node.text || node.title)
     .find((value) => value.trim());
   return (
+    record.summary?.thesis?.trim() ||
     record.summary?.overview.trim() ||
+    record.summary?.quickRead?.[0]?.trim() ||
     record.page.description.trim() ||
     (fromOutline ? truncate(fromOutline.trim(), 220) : '') ||
     (record.notes.trim() ? truncate(record.notes.trim(), 220) : '还没有内容概览。')
@@ -153,9 +165,13 @@ export function buildWiki(records: StudyRecord[]): WikiIndex {
       title: record.page.title.trim() || '未命名记录',
       subtitle: record.page.manual ? '手动摘录' : safeHostname(record.page.url),
       overview: fallbackOverview(record),
+      thesis: record.summary?.thesis,
+      quickRead: record.summary?.quickRead,
       tags,
       concepts,
       sections: record.summary?.sections ?? [],
+      argumentMap: record.summary?.argumentMap,
+      dialogueInsights: record.summary?.dialogueInsights,
       notes: record.notes.trim(),
       recordId: record.id,
       sourceUrl: record.page.url,
