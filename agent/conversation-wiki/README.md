@@ -275,7 +275,7 @@ node --check pi.js
 
 ### 已验证环境
 
-- Pi `0.85.1`：扩展加载，并通过模型实际调用 `conversation_wiki status`。
+- Pi `0.85.1`：扩展加载，并通过模型实际调用 `conversation_wiki status`；另用临时目录验证了自动捕获和 Wiki 生成。
 - DeepSeek Harness `0.2.1-rc.3`：bundle 安装并注册 `conversation_wiki` 工具与 `conversation-wiki` 技能。
 - 飞书发布器：使用 fake `runLark` 做创建/更新/跳过/失败重放测试；真实发布前需要有效 `lark-cli` 授权。
 
