@@ -161,6 +161,8 @@ export default function OptionsApp() {
         notion: Boolean(response.notion),
         markdown: Boolean(response.markdown),
         markdownDir: response.markdownDir,
+        ocr: Boolean(response.ocr),
+        ocrEngine: response.ocrEngine,
         version: response.version,
         syncPending: response.syncPending,
         syncError: response.syncError,
@@ -174,13 +176,26 @@ export default function OptionsApp() {
           health.larkCli ? '飞书' : '',
           health.notion ? 'Notion' : '',
           health.markdown ? '本地 Markdown' : '',
+          health.ocr ? '扫描版 OCR' : '',
         ].filter(Boolean);
-        flash(ready.length > 0 ? `桥接连接成功：${ready.join('、')}。` : '桥接已连接，但还没有启用任何文档目标。');
+        flash(
+          ready.length > 0
+            ? `桥接连接成功：${ready.join('、')}。`
+            : '桥接已连接，但还没有启用任何文档目标或 OCR。',
+        );
       } else {
         flash(health.error ?? '桥接服务未运行。', true);
       }
     } catch (error) {
-      setBridge({ ok: false, larkCli: false, wiki: false, notion: false, markdown: false, error: asErrorMessage(error) });
+      setBridge({
+        ok: false,
+        larkCli: false,
+        wiki: false,
+        notion: false,
+        markdown: false,
+        ocr: false,
+        error: asErrorMessage(error),
+      });
       flash(asErrorMessage(error), true);
     } finally {
       setBridgeLoading(false);
@@ -622,6 +637,9 @@ export default function OptionsApp() {
                   <span className={bridge.notion ? 'health ok' : 'health bad'}>Notion {bridge.notion ? '已配置' : '未配置 Token'}</span>
                   <span className={bridge.markdown ? 'health ok' : 'health bad'}>
                     本地 Markdown {bridge.markdown ? `已启用：${bridge.markdownDir ?? ''}` : '未配置目录'}
+                  </span>
+                  <span className={bridge.ocr ? 'health ok' : 'health bad'}>
+                    扫描版 OCR {bridge.ocr ? '就绪（Windows 自带）' : '不可用（需要 Windows 桥接）'}
                   </span>
                   {bridge.syncPending || bridge.syncError ? (
                     <span className="health bad">

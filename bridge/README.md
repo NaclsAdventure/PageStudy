@@ -9,6 +9,7 @@ Chrome/Edge 扩展
             ├─ lark-cli docs +create / docs +update → 飞书原生 XML 块 + 图片上传
             ├─ lark-cli wiki +node-create / +node-list → 飞书个人文档库 Wiki
             ├─ Notion REST API → Notion 页面
+            ├─ Windows.Media.Ocr → 扫描版 PDF 当前小节页面文字
             └─ 本地 .md 文件 → Obsidian / Logseq
 ```
 
@@ -31,6 +32,8 @@ bridge\start-bridge.cmd
 ```powershell
 lark-cli auth status
 ```
+
+扫描版 PDF 的实时 OCR 使用 Windows 10/11 自带的 `Windows.Media.Ocr`，不需要安装 Python、Tesseract 或上传图片。系统需要安装中文 OCR 语言包（中文 Windows 默认已有）；可在“设置 → 时间和语言 → 语言和区域”里确认中文语言功能。桥接重启后 `/health` 的 `ocr` 应为 `true`。
 
 ## 环境变量
 
@@ -87,11 +90,13 @@ npm run bridge
   "notion": true,
   "markdown": true,
   "markdownDir": "D:\\Notes\\PageStudy",
+  "ocr": true,
+  "ocrEngine": "windows-ocr",
   "version": "lark-cli version 1.0.94"
 }
 ```
 
-`ok` 表示桥接 HTTP 服务正常；各目标是否可用看 `larkCli`、`wiki`、`notion`、`markdown`。`wiki: true` 表示桥接提供 Wiki 接口，不代表 lark-cli 一定已授权 wiki scope；发布失败时以接口错误为准。
+`ok` 表示桥接 HTTP 服务正常；各目标是否可用看 `larkCli`、`wiki`、`notion`、`markdown`、`ocr`。`wiki: true` 表示桥接提供 Wiki 接口，不代表 lark-cli 一定已授权 wiki scope；发布失败时以接口错误为准。`ocr: true` 只表示当前系统是 Windows 且脚本存在，实际语言包是否可用以 OCR 请求的错误为准。
 
 ### `POST /api/feishu/docs`
 
@@ -189,6 +194,34 @@ npm run bridge
 - 只使用当前用户个人文档库；不添加成员、不修改可见性、不开启公开分享。
 - 本地映射丢失时，只有设置 `FEISHU_WEB_ORIGIN` 才会按标题复用已有根节点和分类，否则会新建一套根节点。
 
+### `POST /api/ocr`
+
+识别一张页面截图。扩展只发送当前小节页面的 JPEG base64，不发送 PDF 文件路径，也不把整本 PDF 转成文本：
+
+```json
+{
+  "image": "data:image/jpeg;base64,...",
+  "language": "zh-CN"
+}
+```
+
+返回：
+
+```json
+{
+  "ok": true,
+  "text": "识别出的中文正文…"
+}
+```
+
+限制与说明：
+
+- 仅支持 Windows；其他系统返回错误。
+- 图片解码后上限 8 MB，单次识别超时 90 秒。
+- 图片写入系统临时目录，识别结束立即删除；桥接不保留图片。
+- 汉字之间由 Windows OCR 插入的空格会在返回前合并，避免浪费模型 token。
+- 扩展按页码缓存 OCR 结果；同一小节重试不会重复调用。
+
 ### `POST /api/notion/pages`
 
 创建 Notion 页面：
@@ -269,3 +302,4 @@ npm run bridge
 - 写入动作由扩展侧用户点击或用户启用的自动同步触发，模型不能自行发布。
 - 飞书临时 XML / Markdown 文件在请求结束后删除。
 - Wiki 发布只操作当前用户个人文档库中由映射记录的节点；不会遍历或修改其他个人文档。
+- OCR 接口只接收图片内容，不接受文件路径；临时图片在识别后删除，不会留下整本 PDF 的 OCR 文本。

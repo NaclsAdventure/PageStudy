@@ -30,6 +30,7 @@ import { generateSummary } from './summary';
 import { summarizeSection } from './section-summary';
 import { distillDiscussion } from './distill';
 import { checkBridge } from './bridge';
+import { ocrImage } from './ocr';
 import { appendDocument, writeDocument } from './documents';
 import {
   autoSyncStatus,
@@ -212,6 +213,11 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
             response.ok = false;
             response.error = asErrorMessage(error);
           }
+          sendResponse(response);
+          return;
+        }
+        case 'PS_OCR_IMAGE': {
+          const response = await ocrImage(message.image, message.language);
           sendResponse(response);
           return;
         }

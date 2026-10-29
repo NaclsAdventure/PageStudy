@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyPdfManualOutline,
+  applyPdfSectionOcr,
   buildPdfPageContext,
   isPdfUrl,
   parsePdfOutlineInput,
@@ -121,6 +122,52 @@ describe('applyPdfManualOutline', () => {
     expect(() =>
       applyPdfManualOutline(page, [{ title: '空白', startPage: 9, endPage: 9 }]),
     ).toThrow('没有可提取的文字');
+  });
+});
+
+describe('扫描版 PDF 的实时 OCR 数据流', () => {
+  const scan = () =>
+    buildPdfPageContext({
+      url: 'file:///C:/books/scan.pdf',
+      title: '扫描书',
+      lines: [],
+      pageCount: 10,
+      needsOcr: true,
+      bookmarks: [
+        { title: '第一章', page: 1, level: 1, y: 700 },
+        { title: '第二章', page: 5, level: 1, y: 700 },
+      ],
+    });
+
+  it('保留没有文字的小节和页码范围', () => {
+    const page = scan();
+    expect(page.needsOcr).toBe(true);
+    expect(page.outline).toHaveLength(2);
+    expect(page.outline[0].text).toBe('');
+    expect(page.outline[0].pageEnd).toBe(4);
+    expect(page.outline[1].pageEnd).toBe(10);
+    expect(page.wordCount).toBe(0);
+  });
+
+  it('手动目录不会过滤掉扫描版空小节', () => {
+    const page = applyPdfManualOutline(scan(), [
+      { title: '扫描第一节', startPage: 1, endPage: 2 },
+      { title: '扫描第二节', startPage: 3, endPage: 10 },
+    ]);
+    expect(page.outline).toHaveLength(2);
+    expect(page.outline[0].text).toBe('');
+    expect(page.outline[0].pageEnd).toBe(2);
+  });
+
+  it('OCR 后只填充目标小节并更新指纹', () => {
+    const page = scan();
+    const next = applyPdfSectionOcr(page, page.outline[0].id, '第一章的识别正文。', [
+      { page: 1, text: '第一章的识别正文。' },
+    ]);
+    expect(next.outline[0].text).toContain('第一章的识别正文');
+    expect(next.outline[1].text).toBe('');
+    expect(next.contentHash).not.toBe(page.contentHash);
+    expect(next.blocks?.some((block) => block.id.endsWith('-ocr'))).toBe(true);
   });
 });
 

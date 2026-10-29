@@ -15,6 +15,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { appendNotionPage, createNotionPage, notionStatus } from './notion.mjs';
 import { appendMarkdownNote, createMarkdownNote, markdownStatus } from './markdown-store.mjs';
 import { publishWiki } from './feishu-wiki.mjs';
+import { ocrImage, ocrStatus } from './ocr.mjs';
 
 const HOST = process.env.PAGE_STUDY_BRIDGE_HOST || '127.0.0.1';
 const PORT = Number(process.env.PAGE_STUDY_BRIDGE_PORT || 17373);
@@ -408,6 +409,7 @@ const server = http.createServer(async (req, res) => {
       const version = await getLarkVersion();
       const notion = notionStatus();
       const markdown = markdownStatus();
+      const ocr = ocrStatus();
       sendJson(
         res,
         200,
@@ -418,11 +420,21 @@ const server = http.createServer(async (req, res) => {
           notion: notion.enabled,
           markdown: markdown.enabled,
           markdownDir: markdown.markdownDir,
+          ocr: ocr.ok,
+          ocrEngine: ocr.engine,
+          ocrError: ocr.error,
           version: version.version,
           error: version.error,
         },
         headers,
       );
+      return;
+    }
+
+    if (req.method === 'POST' && requestUrl.pathname === '/api/ocr') {
+      const body = await readJsonBody(req);
+      const text = await ocrImage({ image: body.image, language: body.language });
+      sendJson(res, 200, { ok: true, text }, headers);
       return;
     }
 

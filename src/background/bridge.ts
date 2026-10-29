@@ -13,6 +13,9 @@ interface BridgeHealthPayload {
   notion?: boolean;
   markdown?: boolean;
   markdownDir?: string;
+  ocr?: boolean;
+  ocrEngine?: string;
+  text?: string;
   warnings?: unknown;
 }
 
@@ -81,6 +84,8 @@ export async function checkBridge(config: BridgeConfig): Promise<BridgeHealth> {
         notion: Boolean(data.notion),
         markdown: Boolean(data.markdown),
         markdownDir: data.markdownDir,
+        ocr: Boolean(data.ocr),
+        ocrEngine: data.ocrEngine,
         error: data.error ?? `HTTP ${response.status}`,
       };
     }
@@ -91,6 +96,8 @@ export async function checkBridge(config: BridgeConfig): Promise<BridgeHealth> {
       notion: Boolean(data.notion),
       markdown: Boolean(data.markdown),
       markdownDir: data.markdownDir,
+      ocr: Boolean(data.ocr),
+      ocrEngine: data.ocrEngine,
       version: data.version,
     };
   } catch (error) {

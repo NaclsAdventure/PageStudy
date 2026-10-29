@@ -163,6 +163,8 @@ export interface OutlineNode {
   anchor: string;
   /** PDF 小节起始页；网页大纲没有该字段。 */
   page?: number;
+  /** PDF 小节结束页（含）；扫描版按需 OCR 时用来确定页码范围。 */
+  pageEnd?: number;
   children: OutlineNode[];
 }
 
@@ -218,6 +220,8 @@ export interface PageContext {
   sourceType?: 'web' | 'pdf' | 'manual';
   /** PDF 总页数。 */
   pdfPageCount?: number;
+  /** 扫描版 PDF：没有文字层，需要按小节实时 OCR。 */
+  needsOcr?: boolean;
 }
 
 export interface SelectionContext {
@@ -331,6 +335,9 @@ export interface BridgeHealth {
   notion?: boolean;
   markdown?: boolean;
   markdownDir?: string;
+  /** 扫描版 PDF 的实时 OCR 引擎是否可用。 */
+  ocr?: boolean;
+  ocrEngine?: string;
   version?: string;
   syncPending?: number;
   syncError?: number;

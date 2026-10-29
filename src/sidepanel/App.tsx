@@ -29,7 +29,12 @@ import {
 import { flattenOutline, getAllSkills, getSkillById } from '../shared/skills';
 import { recordToMarkdown } from '../shared/markdown';
 import { createManualPage, isRestrictedPageUrl } from '../shared/page';
-import { applyPdfManualOutline, isPdfUrl, type PdfManualSection } from '../shared/pdf';
+import {
+  applyPdfManualOutline,
+  applyPdfSectionOcr,
+  isPdfUrl,
+  type PdfManualSection,
+} from '../shared/pdf';
 import { deleteRecord, findRecordsByUrl, getRecord, saveRecord } from '../shared/db';
 import {
   DOCUMENT_TARGETS,
@@ -57,7 +62,8 @@ import OutlineTree from './components/OutlineTree';
 import PdfFilePicker from './components/PdfFilePicker';
 import PdfOutlineEditor from './components/PdfOutlineEditor';
 import RichText from './components/RichText';
-import { loadPdfFile, loadPdfPage } from './pdf-loader';
+import { disposeCachedPdfDoc, loadPdfFile, loadPdfPage } from './pdf-loader';
+import { ocrPdfSection } from './pdf-ocr';
 import './styles.css';
 
 interface PublicSettingsResponse {
@@ -191,6 +197,8 @@ export default function App() {
   const [manualText, setManualText] = useState('');
   const [pdfFileLoading, setPdfFileLoading] = useState(false);
   const [pdfFallback, setPdfFallback] = useState(false);
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState('');
   const [distillDraft, setDistillDraft] = useState<DistillDraft | null>(null);
   const manualContextRef = useRef<{ url: string; title: string; text: string }>({ url: '', title: '', text: '' });
   const autoSyncTimerRef = useRef<number | null>(null);
@@ -364,6 +372,9 @@ export default function App() {
             if (loadSeqRef.current !== seq) return;
             setManualMode(false);
             setPage(pdfPage);
+            if (pdfPage.needsOcr) {
+              showNotice('这是扫描版 PDF：补目录后按小节实时 OCR，不会上传整本文件。', 'info');
+            }
             const found = await findRecordForPage(pdfPage);
             if (loadSeqRef.current !== seq) return;
             await loadFoundRecord(found, pdfPage);
@@ -442,6 +453,8 @@ export default function App() {
 
       setManualMode(false);
       setPage(nextPage);
+      // 当前已是普通网页，之前扫描版 PDF 的渲染句柄不再需要。
+      if (nextPage.sourceType !== 'pdf') void disposeCachedPdfDoc();
       const found = await findRecordForPage(nextPage);
       if (loadSeqRef.current !== seq) return;
       await loadFoundRecord(found, nextPage);
@@ -640,21 +653,69 @@ export default function App() {
     return port;
   }, [applyMessages, showNotice, syncMessagesToRecord]);
 
-  const sendChat = () => {
+  const ensurePdfSectionOcr = async (
+    sourcePage: PageContext,
+    section: OutlineNode,
+  ): Promise<{ page: PageContext; section: OutlineNode } | null> => {
+    if (section.text.trim()) return { page: sourcePage, section };
+    if (!sourcePage.needsOcr) return null;
+    if (ocrLoading) {
+      showNotice('正在 OCR 当前小节，请稍等。', 'info');
+      return null;
+    }
+    setOcrLoading(true);
+    setOcrProgress(`准备 OCR《${section.title}》…`);
+    try {
+      const result = await ocrPdfSection(sourcePage, section, (progress) => {
+        setOcrProgress(
+          `正在 OCR《${section.title}》第 ${progress.current}/${progress.total} 页…`,
+        );
+      });
+      const nextPage = applyPdfSectionOcr(sourcePage, section.id, result.text, result.pages);
+      const latest = recordRef.current;
+      if (latest && latest.page.url === sourcePage.url) {
+        await persistRecord({ ...latest, page: nextPage, updatedAt: Date.now() });
+      }
+      setPage(nextPage);
+      const nextSection =
+        flattenOutline(nextPage.outline).find((node) => node.id === section.id) ?? section;
+      setPdfSectionId(nextSection.id);
+      showNotice(`已识别《${section.title}》的 ${result.pages.length} 页。`, 'success');
+      return { page: nextPage, section: nextSection };
+    } catch (error) {
+      showNotice(asErrorMessage(error), 'error');
+      return null;
+    } finally {
+      setOcrLoading(false);
+      setOcrProgress('');
+    }
+  };
+
+  const sendChat = async () => {
     const text = input.trim();
-    if (!text || streaming) return;
+    if (!text || streaming || ocrLoading) return;
     if (!hasApiKey) {
       showNotice('请先在设置页配置模型 API Key。', 'error');
       return;
     }
-    if (isPdf && !pdfFocusSection?.text.trim()) {
+    let chatPage = activePage;
+    let focus = pdfFocusSection;
+    if (isPdf && chatPage?.needsOcr && (!focus || !focus.text.trim())) {
+      if (!focus) {
+        showNotice('请先在记录页补 PDF 目录，再选择一个小节。', 'error');
+        return;
+      }
+      const recognized = await ensurePdfSectionOcr(chatPage, focus);
+      if (!recognized) return;
+      chatPage = recognized.page;
+      focus = recognized.section;
+    }
+    if (isPdf && !focus?.text.trim()) {
       showNotice('请先在记录页补 PDF 目录，或选择一个有正文的小节。', 'error');
       return;
     }
-    const messageAnchor = pdfFocusSection?.anchor ?? selection?.anchor;
-    const messageHeadingPath = pdfFocusSection
-      ? [pdfFocusSection.title]
-      : selection?.headingPath;
+    const messageAnchor = focus?.anchor ?? selection?.anchor;
+    const messageHeadingPath = focus ? [focus.title] : selection?.headingPath;
     const requestId = createId('req');
     const userMessage: ChatMessage = {
       id: createId('user'),
@@ -682,13 +743,13 @@ export default function App() {
     const payload: ChatRequest = {
       requestId,
       messages: history,
-      page: activePage,
+      page: chatPage,
       selections: isPdf ? [] : activeSelections(),
       skill,
       language: settings?.outputLanguage ?? '中文',
       model: provider?.model ?? '',
       contextMode: isPdf ? 'selection' : contextMode,
-      focusSectionId: isPdf ? pdfFocusSection?.id : undefined,
+      focusSectionId: isPdf ? focus?.id : undefined,
       query: text,
     };
     applyMessages((previous) => [...previous, userMessage, assistantMessage]);
@@ -895,7 +956,12 @@ export default function App() {
       setSelection(null);
       setPdfSectionId(target.outline[0]?.id ?? '');
       setSideTab(target.outline.length > 0 ? 'chat' : 'record');
-      showNotice(`已读取本地 PDF：${target.pdfPageCount ?? '?'} 页。`, 'success');
+      showNotice(
+        target.needsOcr
+          ? `已读取扫描版 PDF：${target.pdfPageCount ?? '?'} 页。补目录后按小节实时 OCR。`
+          : `已读取本地 PDF：${target.pdfPageCount ?? '?'} 页。`,
+        target.needsOcr ? 'info' : 'success',
+      );
     } catch (error) {
       setPageError(`读取本地 PDF 失败：${asErrorMessage(error)}`);
       setSideTab('record');
@@ -915,15 +981,23 @@ export default function App() {
       showNotice('请先在设置页配置模型 API Key。', 'error');
       return;
     }
-    if (!section.text.trim()) {
+    let summaryPage = current.page;
+    let summarySection = section;
+    if (!section.text.trim() && summaryPage.needsOcr) {
+      const recognized = await ensurePdfSectionOcr(summaryPage, section);
+      if (!recognized) return;
+      summaryPage = recognized.page;
+      summarySection = recognized.section;
+    }
+    if (!summarySection.text.trim()) {
       showNotice('这一节没有可总结的文字。', 'info');
       return;
     }
-    setSectionSummaryId(section.id);
+    setSectionSummaryId(summarySection.id);
     try {
       const request: SectionSummaryRequest = {
-        page: current.page,
-        section,
+        page: summaryPage,
+        section: summarySection,
         language: settings?.outputLanguage ?? '中文',
         model: provider?.model ?? '',
       };
@@ -967,7 +1041,7 @@ export default function App() {
       await persistRecord(nextRecord);
       void queueAutoSync(nextRecord);
       void queueWikiAutoSync();
-      showNotice(`已生成《${section.title}》的小节笔记。`, 'success');
+      showNotice(`已生成《${summarySection.title}》的小节笔记。`, 'success');
     } catch (error) {
       showNotice(asErrorMessage(error), 'error');
     } finally {
@@ -1253,6 +1327,8 @@ export default function App() {
         notion: Boolean(response.notion),
         markdown: Boolean(response.markdown),
         markdownDir: response.markdownDir,
+        ocr: Boolean(response.ocr),
+        ocrEngine: response.ocrEngine,
         version: response.version,
         syncPending: response.syncPending,
         syncError: response.syncError,
@@ -1389,6 +1465,7 @@ export default function App() {
       isPdf
         ? flatOutline.find((node) => node.id === pdfSectionId) ??
           flatOutline.find((node) => Boolean(node.text.trim())) ??
+          flatOutline[0] ??
           null
         : null,
     [flatOutline, isPdf, pdfSectionId],
@@ -1449,8 +1526,14 @@ export default function App() {
             </h1>
             <div className="page-meta">
               <span>{flattenOutline(outline).length} {isPdf ? '个小节' : '个标题'}</span>
-              <span>{activePage.wordCount.toLocaleString()} 字</span>
-              <span>约 {readingMinutes} 分钟</span>
+              {activePage.needsOcr ? (
+                <span>扫描版 · 按节 OCR</span>
+              ) : (
+                <>
+                  <span>{activePage.wordCount.toLocaleString()} 字</span>
+                  <span>约 {readingMinutes} 分钟</span>
+                </>
+              )}
               {isPdf ? <span>只按小节发送</span> : null}
               {activePage.manual ? <span>手动摘录</span> : null}
               {record ? <span className="record-state">已记录</span> : null}
@@ -1533,7 +1616,9 @@ export default function App() {
             <div className="context-meta">
               {isPdf
                 ? pdfFocusSection
-                  ? `PDF · ${activePage?.pdfPageCount ?? '?'} 页 · 当前小节 ${pdfFocusSection.text.length.toLocaleString('zh-CN')} 字，全文不会发送`
+                  ? activePage?.needsOcr && !pdfFocusSection.text.trim()
+                    ? `PDF · ${activePage?.pdfPageCount ?? '?'} 页 · 扫描版，当前小节待 OCR，全文不会发送`
+                    : `PDF · ${activePage?.pdfPageCount ?? '?'} 页 · 当前小节 ${pdfFocusSection.text.length.toLocaleString('zh-CN')} 字，全文不会发送`
                   : pdfNeedsOutline
                     ? 'PDF 已解析，等待补目录'
                     : 'PDF 没有可选小节'
@@ -1547,7 +1632,9 @@ export default function App() {
               <p className="context-empty">
                 {pdfNeedsOutline
                   ? '这个 PDF 没有书签目录；请到“记录”页按页码范围补目录，再选择小节提问。'
-                  : '每次只发送当前小节；切换小节不会把其他小节带入。'}
+                  : activePage?.needsOcr
+                    ? '扫描版 PDF 没有文字层；总结或提问时会实时 OCR 当前小节，只发送这一节。'
+                    : '每次只发送当前小节；切换小节不会把其他小节带入。'}
               </p>
             ) : contextMode === 'off' ? (
               <p className="context-empty">网页正文不会发送；选中段落仍可作为聚焦。</p>
@@ -1572,10 +1659,17 @@ export default function App() {
                   <div>
                     <span className="selection-label">当前小节 · 只发送这一节</span>
                     <strong className="pdf-focus-title">{pdfFocusSection.title}</strong>
-                    <p>{truncate(pdfFocusSection.text, 160)}</p>
+                    <p>
+                      {pdfFocusSection.text.trim()
+                        ? truncate(pdfFocusSection.text, 160)
+                        : activePage?.needsOcr
+                          ? `点击“OCR 并总结”或直接提问时，会实时识别第 ${pdfFocusSection.page ?? 1}–${pdfFocusSection.pageEnd ?? pdfFocusSection.page ?? 1} 页。`
+                          : '这一节没有可用的正文。'}
+                    </p>
                     <span className="selection-path">
                       {pdfFocusSection.page ? `第 ${pdfFocusSection.page} 页` : 'PDF'} ·{' '}
                       {pdfFocusSection.text.length.toLocaleString('zh-CN')} 字
+                      {ocrLoading && ocrProgress ? ` · ${ocrProgress}` : ''}
                     </span>
                   </div>
                   <span className="focus-badge">本节</span>
@@ -1710,18 +1804,20 @@ export default function App() {
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault();
-                  sendChat();
+                  void sendChat();
                 }
               }}
               placeholder={
                 isPdf
-                  ? pdfFocusSection
-                    ? '只问当前小节；不会发送 PDF 全文…'
-                    : '先补 PDF 目录，或选择一个小节…'
+                  ? activePage?.needsOcr
+                    ? '扫描版：发送时会实时 OCR 当前小节…'
+                    : pdfFocusSection
+                      ? '只问当前小节；不会发送 PDF 全文…'
+                      : '先补 PDF 目录，或选择一个小节…'
                   : '基于全文提问；选中文字会自动聚焦…'
               }
               rows={2}
-              disabled={streaming || (isPdf && !pdfFocusSection?.text.trim())}
+              disabled={streaming || ocrLoading || (isPdf && flatOutline.length === 0)}
             />
             <div className="composer-actions">
               <span>Enter 发送 · Shift+Enter 换行</span>
@@ -1733,8 +1829,12 @@ export default function App() {
                 <button
                   type="button"
                   className="send-button"
-                  onClick={sendChat}
-                  disabled={!input.trim() || (isPdf && !pdfFocusSection?.text.trim())}
+                  onClick={() => void sendChat()}
+                  disabled={
+                    !input.trim() ||
+                    ocrLoading ||
+                    (isPdf && flatOutline.length === 0)
+                  }
                 >
                   发送
                 </button>
@@ -1754,6 +1854,7 @@ export default function App() {
               sectionSummaryId={sectionSummaryId}
               onSummarizeSection={(node) => void summarizePdfSection(node)}
               onApplyPdfOutline={applyPdfOutline}
+              ocrProgress={ocrProgress}
               docLoading={docLoading}
               bridgeHealth={bridgeHealth}
               docTarget={docTarget}
@@ -1798,7 +1899,9 @@ export default function App() {
                   : manualMode
                     ? '浏览器内置页面不能被扩展自动读取。把标题、地址和要学习的段落粘贴到下面，PageStudy 仍会保存记录、生成知识卡并归入 Wiki。'
                     : pdfNeedsOutline
-                      ? '扩展已经解析出 PDF 文字层，但这个文件没有可读取的书签目录。请补一份小节页码范围，之后每次只聚焦一个小节。'
+                      ? activePage?.needsOcr
+                        ? '这是扫描版 PDF，没有文字层，也没有可读取的书签目录。请补一份小节页码范围；之后总结或提问时只 OCR 当前小节，不会上传整本文件。'
+                        : '扩展已经解析出 PDF 文字层，但这个文件没有可读取的书签目录。请补一份小节页码范围，之后每次只聚焦一个小节。'
                       : isPdf
                         ? '先保存 PDF 文字快照；之后在记录页逐个点击“总结本节”，每次只发送一个小节，不发送整份 PDF。'
                         : '点击“记录本页”会读取全文和图片，一次生成速读、核心论证、概念卡、章节笔记和问答沉淀。网页以后变化，记录仍保留当时的快照。'}
@@ -1820,6 +1923,7 @@ export default function App() {
               ) : pdfNeedsOutline ? (
                 <PdfOutlineEditor
                   pageCount={activePage?.pdfPageCount ?? 0}
+                  needsOcr={Boolean(activePage?.needsOcr)}
                   onApply={applyPdfOutline}
                 />
               ) : outline.length > 0 ? (
@@ -2063,6 +2167,7 @@ interface RecordViewProps {
   sectionSummaryId: string | null;
   onSummarizeSection: (node: OutlineNode) => void;
   onApplyPdfOutline: (entries: PdfManualSection[]) => void;
+  ocrProgress?: string;
   docLoading: boolean;
   bridgeHealth: BridgeHealth | null;
   docTarget: DocumentTarget;
@@ -2097,6 +2202,7 @@ function RecordView({
   sectionSummaryId,
   onSummarizeSection,
   onApplyPdfOutline,
+  ocrProgress = '',
   docLoading,
   bridgeHealth,
   docTarget,
@@ -2293,6 +2399,7 @@ function RecordView({
           <p className="muted">
             每次只把一个小节发给模型；点小节右侧的“总结本节”，不会重新上传整份 PDF。
           </p>
+          {ocrProgress ? <p className="pdf-ocr-progress">{ocrProgress}</p> : null}
           <OutlineTree
             nodes={outline}
             summary={summary}
@@ -2517,7 +2624,9 @@ function RecordView({
           {bridgeHealth?.ok
             ? `本地桥接已连接：飞书 ${bridgeHealth.larkCli ? '就绪' : '未就绪'} · Notion ${
                 bridgeHealth.notion ? '就绪' : '未配置'
-              } · 本地 Markdown ${bridgeHealth.markdown ? '就绪' : '未配置'}`
+              } · 本地 Markdown ${bridgeHealth.markdown ? '就绪' : '未配置'} · 扫描版 OCR ${
+                bridgeHealth.ocr ? '就绪' : '不可用'
+              }`
             : '需要本地桥接服务：在项目目录运行 npm run bridge。'}
         </p>
       </section>

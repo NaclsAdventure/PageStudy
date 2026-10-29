@@ -31,6 +31,7 @@ export type RuntimeMessage =
   | { type: 'PS_TEST_PROVIDER' }
   | { type: 'PS_SUMMARIZE'; request: SummaryRequest }
   | { type: 'PS_SUMMARIZE_SECTION'; request: SectionSummaryRequest }
+  | { type: 'PS_OCR_IMAGE'; image: string; language?: string }
   | { type: 'PS_DISTILL_DISCUSSION'; request: DistillRequest }
   | { type: 'PS_BRIDGE_HEALTH' }
   | { type: 'PS_WRITE_DOCUMENT'; target: DocumentTarget; title: string; markdown: string; xml?: string; recordId?: string }
@@ -73,6 +74,12 @@ export interface SummarizeResponse {
 export interface SectionSummaryResponse {
   ok: boolean;
   section?: SummarySection;
+  error?: string;
+}
+
+export interface OcrImageResponse {
+  ok: boolean;
+  text?: string;
   error?: string;
 }
 

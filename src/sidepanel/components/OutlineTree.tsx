@@ -57,7 +57,7 @@ function OutlineItem({
         <button type="button" className="outline-title" onClick={() => onJump(node.anchor)}>
           {node.title}
         </button>
-        {onSummarizeSection && node.text.trim() ? (
+        {onSummarizeSection && (node.text.trim() || node.page !== undefined) ? (
           <button
             type="button"
             className="outline-summarize-button"
@@ -65,10 +65,20 @@ function OutlineItem({
               event.stopPropagation();
               onSummarizeSection(node);
             }}
-            disabled={Boolean(summarizingId) || !node.text.trim()}
-            title="只把这一节正文发给模型，生成这一节的笔记"
+            disabled={Boolean(summarizingId)}
+            title={
+              node.text.trim()
+                ? '只把这一节正文发给模型，生成这一节的笔记'
+                : '这一节没有文字层；点击后先实时 OCR 页码范围，再生成笔记'
+            }
           >
-            {summarizingId === node.id ? '总结中…' : summary ? '重新总结' : '总结本节'}
+            {summarizingId === node.id
+              ? '总结中…'
+              : !node.text.trim()
+                ? 'OCR 并总结'
+                : summary
+                  ? '重新总结'
+                  : '总结本节'}
           </button>
         ) : null}
         {summary?.keyPoints.length ? <span className="outline-badge">{summary.keyPoints.length}</span> : null}

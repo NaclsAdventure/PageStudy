@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PageStudy · 阅读学习助手",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "自动读取网页全文与图片，支持浏览器内 PDF 分节精读；一键生成学习知识卡，并同步到飞书、Notion 或本地知识库。",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "sidePanel", "contextMenus", "alarms", "activeTab"],

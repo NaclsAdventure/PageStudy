@@ -33,6 +33,8 @@ export interface PdfPageInput {
   bookmarks?: PdfBookmark[];
   pageCount: number;
   lang?: string;
+  /** 扫描版 PDF：保留空小节，交给实时 OCR 填充正文。 */
+  needsOcr?: boolean;
 }
 
 export interface PdfOutlineParseResult {
@@ -135,14 +137,15 @@ function pageBlocks(lines: PdfTextLine[]): PageBlock[] {
 function buildPage(
   input: PdfPageInput,
   ordered: PdfTextLine[],
-  sections: Array<{ title: string; level: number; page: number; text: string }>,
+  sections: Array<{ title: string; level: number; page: number; pageEnd?: number; text: string }>,
 ): PageContext {
   const cleanLines = lineText(ordered);
-  if (!cleanLines) {
+  const needsOcr = Boolean(input.needsOcr);
+  if (!cleanLines && !needsOcr) {
     throw new Error('这个 PDF 没有可提取的文字层，可能是扫描件。');
   }
   const outline: OutlineNode[] = sections
-    .filter((section) => section.text.trim())
+    .filter((section) => needsOcr || section.text.trim())
     .map((section, index) => ({
       id: `pdf-section-${index + 1}`,
       level: Math.max(1, Math.min(6, section.level || 1)),
@@ -151,11 +154,15 @@ function buildPage(
       // 同一页可能有多个书签小节，锚点必须唯一，否则点击标题会跳到前一节。
       anchor: `pdf-p${section.page}-s${index + 1}`,
       page: section.page,
+      pageEnd: section.pageEnd,
       children: [],
     }));
   const cleanText = truncate(cleanLines, MAX_PAGE_CHARS);
-  const blocks =
-    outline.length > 0 ? outline.flatMap((node) => sectionBlocks(node)) : pageBlocks(ordered);
+  const blocks = needsOcr && outline.length === 0
+    ? []
+    : outline.length > 0
+      ? outline.flatMap((node) => sectionBlocks(node))
+      : pageBlocks(ordered);
   return {
     url: input.url,
     title: cleanTitle(input.title, '未命名 PDF'),
@@ -164,19 +171,24 @@ function buildPage(
     author: normalizeWhitespace(input.author ?? ''),
     publishedAt: '',
     lang: input.lang ?? 'zh-CN',
-    description: truncate(normalizeWhitespace(outline[0]?.text || cleanText), 180),
+    description: needsOcr
+      ? '扫描版 PDF：需要按小节实时 OCR 后总结。'
+      : truncate(normalizeWhitespace(outline[0]?.text || cleanText), 180),
     wordCount: cleanText.replace(/\s/g, '').length,
     capturedAt: Date.now(),
     contentHash: hashString(
-      `${input.url}\n${input.title}\n${cleanText}\n${outline.map((node) => `${node.title}:${node.text}`).join('\n')}`,
+      `${input.url}\n${input.title}\n${cleanText}\n${needsOcr ? 'ocr' : 'text'}\n${outline
+        .map((node) => `${node.title}:${node.page ?? ''}:${node.pageEnd ?? ''}:${node.text}`)
+        .join('\n')}`,
     ),
     outline,
     blocks,
     images: [],
     tokenEstimate: Math.ceil(cleanText.length / 2),
-    extractionQuality: (input.bookmarks?.length ?? 0) > 0 ? 'high' : 'medium',
+    extractionQuality: needsOcr ? 'low' : (input.bookmarks?.length ?? 0) > 0 ? 'high' : 'medium',
     sourceType: 'pdf',
     pdfPageCount: input.pageCount,
+    needsOcr: needsOcr || undefined,
   };
 }
 
@@ -186,7 +198,7 @@ function buildPage(
  */
 export function buildPdfPageContext(input: PdfPageInput): PageContext {
   const ordered = orderedLines(input.lines);
-  if (ordered.length === 0) {
+  if (ordered.length === 0 && !input.needsOcr) {
     throw new Error('这个 PDF 没有可提取的文字层，可能是扫描件。');
   }
   const bookmarks = (input.bookmarks ?? [])
@@ -203,14 +215,24 @@ export function buildPdfPageContext(input: PdfPageInput): PageContext {
   const sections = starts
     .map(({ bookmark, start }, index) => {
       const end = starts[index + 1]?.start ?? ordered.length;
+      // 父章节的结束页要跳过自己的子书签，等到下一个同级/更高级书签。
+      let pageEnd = input.pageCount;
+      for (let next = index + 1; next < starts.length; next += 1) {
+        const candidate = starts[next].bookmark;
+        if (candidate.level > bookmark.level) continue;
+        pageEnd =
+          candidate.page > bookmark.page ? candidate.page - 1 : bookmark.page;
+        break;
+      }
       return {
         title: bookmark.title,
         level: bookmark.level,
         page: bookmark.page,
+        pageEnd: Math.max(bookmark.page, pageEnd),
         text: lineText(ordered.slice(start, end)),
       };
     })
-    .filter((section) => section.text.trim());
+    .filter((section) => input.needsOcr || section.text.trim());
   return buildPage(input, ordered, sections);
 }
 
@@ -236,6 +258,7 @@ export function applyPdfManualOutline(
     throw new Error('缺少 PDF 页数，无法应用目录。');
   }
   const pages = pageTextFromBlocks(page);
+  const needsOcr = Boolean(page.needsOcr);
   const sections = entries
     .map((entry) => {
       const chunks: string[] = [];
@@ -247,10 +270,12 @@ export function applyPdfManualOutline(
         title: entry.title,
         level: 1,
         page: entry.startPage,
-        text: chunks.join('\n').trim(),
+        pageEnd: entry.endPage,
+        // 扫描版的 heading 块只有标题，不能当正文；等 OCR 结果回来再填。
+        text: needsOcr ? '' : chunks.join('\n').trim(),
       };
     })
-    .filter((section) => section.text.trim());
+    .filter((section) => needsOcr || section.text.trim());
   if (sections.length === 0) {
     throw new Error('填写的页码范围里没有可提取的文字。');
   }
@@ -271,10 +296,69 @@ export function applyPdfManualOutline(
       lines: ordered,
       pageCount: page.pdfPageCount,
       lang: page.lang,
+      needsOcr,
     },
     ordered,
     sections,
   );
+}
+
+/**
+ * 把实时 OCR 结果写回一个小节。扫描版原始快照没有正文，
+ * OCR 完成后只替换目标小节，并同步更新内容哈希，避免覆盖其他小节。
+ */
+export function applyPdfSectionOcr(
+  page: PageContext,
+  sectionId: string,
+  text: string,
+  pages: Array<{ page: number; text: string }> = [],
+): PageContext {
+  const cleanText = truncate(normalizeWhitespace(text), MAX_PDF_SECTION_CHARS);
+  if (!cleanText) throw new Error('OCR 没有识别出可用文字。');
+  let matched: OutlineNode | null = null;
+  const updateNodes = (nodes: OutlineNode[]): OutlineNode[] =>
+    nodes.map((node) => {
+      if (node.id === sectionId) {
+        matched = node;
+        return { ...node, text: cleanText };
+      }
+      return { ...node, children: updateNodes(node.children) };
+    });
+  const outline = updateNodes(page.outline);
+  if (!matched) throw new Error('找不到要写入 OCR 的小节。');
+  const target = matched as OutlineNode;
+  const blocks = (page.blocks ?? []).filter(
+    (block) => block.id !== `${sectionId}-text` && block.id !== `${sectionId}-ocr`,
+  );
+  blocks.push({
+    id: `${sectionId}-ocr`,
+    kind: 'paragraph',
+    text: cleanText,
+    anchor: target.anchor,
+    headingPath: [target.title],
+    page: target.page,
+  });
+  for (const item of pages) {
+    if (!item.text.trim()) continue;
+    blocks.push({
+      id: `pdf-ocr-page-${item.page}`,
+      kind: 'paragraph',
+      text: truncate(item.text.trim(), 20000),
+      anchor: `pdf-p${item.page}`,
+      headingPath: [target.title],
+      page: item.page,
+    });
+  }
+  const wordCount = blocks.reduce((sum, block) => sum + block.text.replace(/\s/g, '').length, 0);
+  return {
+    ...page,
+    outline,
+    blocks,
+    wordCount,
+    tokenEstimate: Math.ceil(blocks.reduce((sum, block) => sum + block.text.length, 0) / 2),
+    description: truncate(cleanText, 180),
+    contentHash: hashString(`${page.contentHash}\n${sectionId}\n${cleanText}`),
+  };
 }
 
 /**
