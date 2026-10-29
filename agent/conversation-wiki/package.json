@@ -1,6 +1,6 @@
 {
   "name": "pagestudy-conversation-wiki",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "把 Pi / DeepSeek Harness 会话整理成本地 Wiki，并可发布到飞书个人文档库。",
