@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "会话知识库",
+    "description": "把 Pi / DeepSeek Harness 会话自动归档为本地 Markdown Wiki，并可发布到飞书个人文档库。"
+  }
+}

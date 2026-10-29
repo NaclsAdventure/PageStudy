@@ -1,0 +1,61 @@
+{
+  "name": "pagestudy-conversation-wiki",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "把 Pi / DeepSeek Harness 会话整理成本地 Wiki，并可发布到飞书个人文档库。",
+  "keywords": ["pi-package", "conversation", "wiki", "feishu", "knowledge-base"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "bin": {
+    "conversation-wiki": "./cli.mjs"
+  },
+  "exports": {
+    ".": "./dsh.js",
+    "./pi": "./pi.js",
+    "./core": "./core/index.mjs",
+    "./cli": "./cli.mjs",
+    "./skills/conversation-wiki/SKILL.md": "./skills/conversation-wiki/SKILL.md",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dsh.js",
+    "pi.js",
+    "cli.mjs",
+    "core/**/*.mjs",
+    "skills/**/*",
+    "locale/*.json",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": ["./pi.js"],
+    "skills": ["./skills"]
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": { "optional": true },
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "typebox": { "optional": true }
+  },
+  "scripts": {
+    "test": "node --test test/core.test.mjs test/feishu.test.mjs test/dsh.test.mjs",
+    "test:dsh": "node --test test/dsh.test.mjs",
+    "check": "node --check dsh.js && node --check pi.js && node --check cli.mjs"
+  }
+}

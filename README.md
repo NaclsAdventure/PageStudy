@@ -447,6 +447,21 @@ Invoke-WebRequest http://127.0.0.1:17373/health -UseBasicParsing
 
 ---
 
+## Agent 会话知识库（Pi / DSH）
+
+浏览器扩展之外，仓库还提供一个独立的 Agent 原生插件：
+
+`agent/conversation-wiki/`
+
+它把 **Pi / DeepSeek Harness 会话**作为输入，生成同一套“会话 / 标签 / 概念”本地 Wiki，并可选发布到飞书个人文档库。Pi 和 DSH 共用同一份无第三方依赖的 ESM 核心。
+
+- Pi：`pi install ./agent/conversation-wiki`
+- DSH：在插件管理器中安装 `./agent/conversation-wiki` bundle
+- 默认只写本地；`autoPublish` 和 `feishu.enabled` 默认关闭
+- 完整说明见 [agent/conversation-wiki/README.md](agent/conversation-wiki/README.md)
+
+---
+
 ## 隐私说明
 
 - 页面内容只在你主动提问、点击“记录并总结”或启用手动摘录保存时发送给当前配置的模型服务商。
