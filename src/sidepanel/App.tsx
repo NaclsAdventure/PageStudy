@@ -54,9 +54,10 @@ import {
   type SummarizeResponse,
 } from '../shared/messages';
 import OutlineTree from './components/OutlineTree';
+import PdfFilePicker from './components/PdfFilePicker';
 import PdfOutlineEditor from './components/PdfOutlineEditor';
 import RichText from './components/RichText';
-import { loadPdfPage } from './pdf-loader';
+import { loadPdfFile, loadPdfPage } from './pdf-loader';
 import './styles.css';
 
 interface PublicSettingsResponse {
@@ -188,6 +189,8 @@ export default function App() {
   const [manualTitle, setManualTitle] = useState('');
   const [manualUrl, setManualUrl] = useState('');
   const [manualText, setManualText] = useState('');
+  const [pdfFileLoading, setPdfFileLoading] = useState(false);
+  const [pdfFallback, setPdfFallback] = useState(false);
   const [distillDraft, setDistillDraft] = useState<DistillDraft | null>(null);
   const manualContextRef = useRef<{ url: string; title: string; text: string }>({ url: '', title: '', text: '' });
   const autoSyncTimerRef = useRef<number | null>(null);
@@ -295,6 +298,7 @@ export default function App() {
     const seq = ++loadSeqRef.current;
     setPageLoading(true);
     setPageError('');
+    setPdfFallback(false);
     let targetTab: chrome.tabs.Tab | undefined;
     try {
       const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -305,6 +309,10 @@ export default function App() {
       setTabId(nextTabId);
       const nextUrl = targetTab.url ?? '';
       const nextTitle = targetTab.title ?? '';
+      const localFile = /^file:/i.test(nextUrl);
+      const restricted = isRestrictedPageUrl(nextUrl);
+      const likelyPdf =
+        isPdfUrl(nextUrl) || /\.pdf(?:$|[?#])/i.test(nextTitle.trim());
 
       const loadFoundRecord = async (found: StudyRecord | null, fallbackPage: PageContext | null) => {
         if (found) {
@@ -341,34 +349,15 @@ export default function App() {
         setManualTitle(nextTitle || '手动摘录');
         setManualUrl('');
         setManualText('');
+        setPdfFallback(likelyPdf);
         setPageError('当前标签页的地址不可读取；请手动填写标题和摘录内容。');
         setSideTab('record');
         return;
       }
 
-      // 浏览器内置页（chrome://、edge://、扩展页等）禁止内容脚本注入。
-      // 这里保留标签页信息，进入手动摘录模式，而不是把整个侧栏置空。
-      if (isRestrictedPageUrl(nextUrl)) {
-        const found = (await findRecordsByUrl(nextUrl)).sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
-        if (loadSeqRef.current !== seq) return;
-        await loadFoundRecord(found, null);
-        if (!found) {
-          const draft = manualContextRef.current;
-          const same = draft.url === nextUrl;
-          setManualMode(true);
-          setManualTitle(same ? draft.title : nextTitle || '手动摘录');
-          setManualUrl(nextUrl);
-          setManualText(same ? draft.text : '');
-          setPageError('当前是浏览器内置页面，无法自动读取正文；可以在下方手动摘录后记录。');
-          setSideTab('record');
-        }
-        return;
-      }
-
-      const likelyPdf =
-        isPdfUrl(nextUrl) || /\.pdf(?:$|[?#])/i.test(nextTitle.trim());
       let pdfError = '';
-      if (likelyPdf) {
+      // file:// 也属于“受限 URL”，但 PDF 可以绕过 content script 直接解析或让用户选文件。
+      if (likelyPdf && nextUrl && (!restricted || localFile)) {
         try {
           const pdfPage = await loadPdfPage(nextUrl, nextTitle);
           if (pdfPage) {
@@ -386,6 +375,35 @@ export default function App() {
         }
       }
       if (loadSeqRef.current !== seq) return;
+
+      // 浏览器内置页（chrome://、edge://、扩展页等）禁止内容脚本注入。
+      // file:// 的 PDF 读取失败也走这里，但会额外显示“选择本地 PDF”入口。
+      if (restricted) {
+        setPdfFallback(localFile && likelyPdf);
+        // 本地 PDF 读取失败时不抢先显示旧快照，否则用户看不到“选择本地 PDF”入口。
+        const found = localFile && pdfError
+          ? null
+          : (await findRecordsByUrl(nextUrl)).sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
+        if (loadSeqRef.current !== seq) return;
+        await loadFoundRecord(found, null);
+        if (!found) {
+          const draft = manualContextRef.current;
+          const same = draft.url === nextUrl;
+          setManualMode(true);
+          setManualTitle(same ? draft.title : nextTitle || '手动摘录');
+          setManualUrl(nextUrl);
+          setManualText(same ? draft.text : '');
+          setPageError(
+            pdfError
+              ? `PDF 读取失败：${pdfError}`
+              : '当前是浏览器内置页面，无法自动读取正文；可以在下方手动摘录后记录。',
+          );
+          setSideTab('record');
+        } else if (pdfError) {
+          setPageError(`PDF 读取失败：${pdfError}。当前显示已保存的快照。`);
+        }
+        return;
+      }
 
       let nextPage: PageContext | null = null;
       let contentError = '';
@@ -839,6 +857,51 @@ export default function App() {
     }
     setSideTab('record');
     showNotice(`已应用目录：${next.outline.length} 个小节。`, 'success');
+  };
+
+  const loadLocalPdf = async (file: File) => {
+    const seq = loadSeqRef.current;
+    setPdfFileLoading(true);
+    setPageError('');
+    try {
+      const sourceUrl = manualUrl.trim() || `file:///${file.name}`;
+      const sourceTitle = manualTitle.trim() || file.name;
+      const pdfPage = await loadPdfFile(file, sourceUrl, sourceTitle);
+      if (loadSeqRef.current !== seq) return;
+      const found = await findRecordForPage(pdfPage);
+      if (loadSeqRef.current !== seq) return;
+      const target = found?.page ?? pdfPage;
+      setManualMode(false);
+      if (found) {
+        recordRef.current = found;
+        setRecord(found);
+        setPage(found.page);
+        messagesRef.current = found.messages;
+        setMessages(found.messages);
+        contextsRef.current = found.selections;
+        setContexts(found.selections);
+        if (found.page.contentHash !== pdfPage.contentHash) {
+          showNotice('本地 PDF 与已保存快照不一致；当前仍显示原快照。', 'info');
+        }
+      } else {
+        recordRef.current = null;
+        setRecord(null);
+        setPage(pdfPage);
+        messagesRef.current = [];
+        setMessages([]);
+        contextsRef.current = [];
+        setContexts([]);
+      }
+      setSelection(null);
+      setPdfSectionId(target.outline[0]?.id ?? '');
+      setSideTab(target.outline.length > 0 ? 'chat' : 'record');
+      showNotice(`已读取本地 PDF：${target.pdfPageCount ?? '?'} 页。`, 'success');
+    } catch (error) {
+      setPageError(`读取本地 PDF 失败：${asErrorMessage(error)}`);
+      setSideTab('record');
+    } finally {
+      setPdfFileLoading(false);
+    }
   };
 
   const summarizePdfSection = async (section: OutlineNode) => {
@@ -1318,6 +1381,7 @@ export default function App() {
   const summary = record?.summary ?? null;
   const isPdf = activePage?.sourceType === 'pdf';
   const pdfNeedsOutline = isPdf && outline.length === 0;
+  const manualLocalPdf = manualMode && pdfFallback;
   const readingMinutes = activePage ? Math.max(1, Math.round(activePage.wordCount / 450)) : 0;
   const flatOutline = useMemo(() => flattenOutline(outline), [outline]);
   const pdfFocusSection = useMemo(
@@ -1718,24 +1782,33 @@ export default function App() {
             <div className="record-empty">
               <div className="record-empty-icon">▤</div>
               <h2>
-                {manualMode
-                  ? '手动摘录浏览器内置页'
-                  : pdfNeedsOutline
-                    ? 'PDF 缺少书签目录'
-                    : isPdf
-                      ? '保存 PDF，按小节精读'
-                      : '记录本页，生成知识卡'}
+                {manualLocalPdf
+                  ? '读取本地 PDF'
+                  : manualMode
+                    ? '手动摘录浏览器内置页'
+                    : pdfNeedsOutline
+                      ? 'PDF 缺少书签目录'
+                      : isPdf
+                        ? '保存 PDF，按小节精读'
+                        : '记录本页，生成知识卡'}
               </h2>
               <p>
-                {manualMode
-                  ? '浏览器内置页面不能被扩展自动读取。把标题、地址和要学习的段落粘贴到下面，PageStudy 仍会保存记录、生成知识卡并归入 Wiki。'
-                  : pdfNeedsOutline
-                    ? '扩展已经解析出 PDF 文字层，但这个文件没有可读取的书签目录。请补一份小节页码范围，之后每次只聚焦一个小节。'
-                    : isPdf
-                      ? '先保存 PDF 文字快照；之后在记录页逐个点击“总结本节”，每次只发送一个小节，不发送整份 PDF。'
-                      : '点击“记录本页”会读取全文和图片，一次生成速读、核心论证、概念卡、章节笔记和问答沉淀。网页以后变化，记录仍保留当时的快照。'}
+                {manualLocalPdf
+                  ? '浏览器默认不允许扩展直接读取本地文件。请选择你刚才打开的 PDF；文件只在扩展内解析，不会上传，也不会改变原文件。'
+                  : manualMode
+                    ? '浏览器内置页面不能被扩展自动读取。把标题、地址和要学习的段落粘贴到下面，PageStudy 仍会保存记录、生成知识卡并归入 Wiki。'
+                    : pdfNeedsOutline
+                      ? '扩展已经解析出 PDF 文字层，但这个文件没有可读取的书签目录。请补一份小节页码范围，之后每次只聚焦一个小节。'
+                      : isPdf
+                        ? '先保存 PDF 文字快照；之后在记录页逐个点击“总结本节”，每次只发送一个小节，不发送整份 PDF。'
+                        : '点击“记录本页”会读取全文和图片，一次生成速读、核心论证、概念卡、章节笔记和问答沉淀。网页以后变化，记录仍保留当时的快照。'}
               </p>
-              {manualMode ? (
+              {manualLocalPdf ? (
+                <PdfFilePicker
+                  busy={pdfFileLoading}
+                  onFile={(file) => void loadLocalPdf(file)}
+                />
+              ) : manualMode ? (
                 <ManualCaptureFields
                   title={manualTitle}
                   url={manualUrl}
@@ -1759,7 +1832,7 @@ export default function App() {
                   {outline.length > 4 ? <p className="muted">还有更多章节，记录后完整查看。</p> : null}
                 </div>
               ) : null}
-              {!pdfNeedsOutline ? (
+              {!pdfNeedsOutline && !manualLocalPdf ? (
                 <div className="record-actions">
                   {isPdf ? (
                     <button
@@ -1781,7 +1854,7 @@ export default function App() {
                   ) : null}
                 </div>
               ) : null}
-              {!hasApiKey && !pdfNeedsOutline ? (
+              {!hasApiKey && !pdfNeedsOutline && !manualLocalPdf ? (
                 <p className="muted">
                   {isPdf
                     ? '保存 PDF 不需要模型；逐节总结前请配置 API Key。'

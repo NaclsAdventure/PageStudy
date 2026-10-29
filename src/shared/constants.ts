@@ -1,7 +1,7 @@
 import type { ProviderId, ProviderConfig, Settings, Skill } from './types';
 
 export const APP_NAME = 'PageStudy';
-export const APP_VERSION = '0.7.0';
+export const APP_VERSION = '0.7.1';
 export const SETTINGS_KEY = 'pagestudy.settings.v1';
 export const SYNC_QUEUE_KEY = 'pagestudy.sync.queue.v1';
 export const SYNC_ALARM = 'pagestudy-sync';

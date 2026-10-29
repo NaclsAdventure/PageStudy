@@ -7,6 +7,11 @@ const MAX_PDF_BYTES = 60 * 1024 * 1024;
 const MAX_PDF_PAGES = 300;
 const FETCH_TIMEOUT_MS = 45000;
 
+function tooLargeMessage(bytes: number): string {
+  const size = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `PDF 文件 ${size}，超过 60 MB 上限；大体积扫描版需要先 OCR 或压缩后再导入。`;
+}
+
 interface PdfTextItem {
   str?: string;
   transform?: number[];
@@ -206,22 +211,49 @@ export async function loadPdfPage(
     }
     const declaredLength = Number(response.headers.get('content-length') ?? '0');
     if (declaredLength > MAX_PDF_BYTES) {
-      throw new Error('PDF 文件超过 60 MB，暂不支持在侧栏解析。');
+      throw new Error(tooLargeMessage(declaredLength));
     }
     const buffer = await response.arrayBuffer();
     const bytes = new Uint8Array(buffer);
     const contentType = response.headers.get('content-type') ?? '';
     if (!/application\/pdf/i.test(contentType) && !hasPdfMagic(bytes)) return null;
     if (bytes.byteLength > MAX_PDF_BYTES) {
-      throw new Error('PDF 文件超过 60 MB，暂不支持在侧栏解析。');
+      throw new Error(tooLargeMessage(bytes.byteLength));
     }
     return await extractPdf(bytes, url, tabTitle);
   } catch (error) {
     if (controller.signal.aborted) {
-      throw new Error('读取 PDF 超时；可以稍后重试，或改用手动摘录。');
+      throw new Error('读取 PDF 超时；可以稍后重试，或选择本地 PDF。');
+    }
+    if (/^file:/i.test(url)) {
+      throw new Error(
+        '浏览器未允许扩展直接读取本地文件。请在下方选择本地 PDF，或在扩展管理页开启“允许访问文件网址”。',
+      );
     }
     throw new Error(asErrorMessage(error));
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+/**
+ * 读取用户通过 file input 主动选择的 PDF。
+ * Chrome/Edge 默认关闭扩展的 file:// 访问，这个入口不依赖该开关。
+ */
+export async function loadPdfFile(
+  file: File,
+  url: string,
+  title: string,
+): Promise<PageContext> {
+  if (file.size > MAX_PDF_BYTES) {
+    throw new Error(tooLargeMessage(file.size));
+  }
+  if (file.size === 0) {
+    throw new Error('选择的 PDF 文件是空的。');
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!hasPdfMagic(bytes) && !/\.pdf$/i.test(file.name)) {
+    throw new Error('选择的文件不是 PDF。');
+  }
+  return extractPdf(bytes, url.trim() || file.name, title.trim() || file.name);
 }

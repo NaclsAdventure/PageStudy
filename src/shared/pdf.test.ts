@@ -130,5 +130,7 @@ describe('isPdfUrl', () => {
     expect(isPdfUrl('https://example.com/a.pdf?x=1')).toBe(true);
     expect(isPdfUrl('https://example.com/pdf/abc')).toBe(true);
     expect(isPdfUrl('https://example.com/article')).toBe(false);
+    expect(isPdfUrl('file:///C:/Users/test/Downloads/%E6%B8%B8%E6%88%8F.pdf')).toBe(true);
+    expect(isPdfUrl('file:///C:/Users/test/Downloads/notes.txt')).toBe(false);
   });
 });
