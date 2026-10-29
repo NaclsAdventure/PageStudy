@@ -397,7 +397,7 @@ public/
 | Anthropic | `/v1/messages` | `thinking.budget_tokens`：2k/4k/8k/16k/24k |
 | Gemini | `:generateContent` | `thinkingConfig`：`thinkingBudget` 或 Gemini 3 的 `thinkingLevel` |
 
-流式聊天通过 `chrome.runtime.Port`（名称 `ps-chat`）传递 SSE 增量；知识卡生成使用非流式请求，要求模型只输出 JSON。
+流式聊天通过 `chrome.runtime.Port`（名称 `ps-chat`）传递 SSE 增量；知识卡生成使用非流式请求，要求模型只输出 JSON。知识卡请求会把输出预算提高到 8192 tokens；如果模型仍输出截断或结构损坏，会自动用精简提示重试一次。
 
 ### 已知边界
 

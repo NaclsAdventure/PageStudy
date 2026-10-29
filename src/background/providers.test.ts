@@ -92,6 +92,68 @@ describe('requestChat 推理强度映射', () => {
     });
   });
 
+  it('非流式知识卡请求使用 maxTokens，并读取 finish_reason', async () => {
+    const captured = mockJson({
+      choices: [{ message: { content: '回答' }, finish_reason: 'length' }],
+    });
+    const result = await requestChat({
+      provider: provider({ id: 'deepseek', baseUrl: 'https://api.deepseek.com/v1' }),
+      system: '系统提示',
+      messages: [{ role: 'user', content: '问题' }],
+      maxTokens: 8192,
+    });
+    const body = JSON.parse(String(captured[0].init.body)) as Record<string, unknown>;
+    expect(body.max_tokens).toBe(8192);
+    expect(body.stream).toBe(false);
+    expect(result.finishReason).toBe('length');
+  });
+
+  it('OpenAI o 系列推理模型使用 max_completion_tokens', async () => {
+    const captured = mockJson({ choices: [{ message: { content: '回答' } }] });
+    await requestChat({
+      provider: provider({ id: 'openai', model: 'o3-mini', reasoning: 'high' }),
+      system: '系统提示',
+      messages: [{ role: 'user', content: '问题' }],
+      maxTokens: 8192,
+    });
+    const body = JSON.parse(String(captured[0].init.body)) as Record<string, unknown>;
+    expect(body.max_completion_tokens).toBe(8192);
+    expect(body.max_tokens).toBeUndefined();
+    expect(body.temperature).toBeUndefined();
+  });
+
+  it('Anthropic 接收更大的输出预算，但仍不小于 thinking budget', async () => {
+    const captured = mockJson({ content: [{ type: 'text', text: '回答' }], stop_reason: 'max_tokens' });
+    await requestChat({
+      provider: provider({ id: 'anthropic', reasoning: 'xhigh', baseUrl: 'https://api.anthropic.com' }),
+      system: '系统提示',
+      messages: [{ role: 'user', content: '问题' }],
+      maxTokens: 8192,
+    });
+    const body = JSON.parse(String(captured[0].init.body)) as Record<string, unknown>;
+    expect(body.max_tokens).toBe(16384 + 4096);
+  });
+
+  it('Gemini 接收 maxTokens 并读取 finishReason', async () => {
+    const captured = mockJson({
+      candidates: [{ content: { parts: [{ text: '回答' }] }, finishReason: 'MAX_TOKENS' }],
+    });
+    const result = await requestChat({
+      provider: provider({
+        id: 'gemini',
+        reasoning: 'default',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+        model: 'gemini-test',
+      }),
+      system: '系统提示',
+      messages: [{ role: 'user', content: '问题' }],
+      maxTokens: 6000,
+    });
+    const body = JSON.parse(String(captured[0].init.body)) as Record<string, unknown>;
+    expect(body.generationConfig).toMatchObject({ maxOutputTokens: 6000 });
+    expect(result.finishReason).toBe('MAX_TOKENS');
+  });
+
   it('default 不发送推理字段', async () => {
     const captured = mockJson({ choices: [{ message: { content: '回答' } }] });
     await requestChat({

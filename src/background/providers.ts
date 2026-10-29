@@ -7,10 +7,13 @@ interface RequestChatOptions {
   messages: ChatHistoryMessage[];
   signal?: AbortSignal;
   onDelta?: (text: string) => void;
+  /** 非流式生成时限制输出长度；知识卡需要比普通聊天更大的预算。 */
+  maxTokens?: number;
 }
 
 interface ProviderResponse {
   text: string;
+  finishReason?: string;
 }
 
 export class ProviderError extends Error {
@@ -182,12 +185,27 @@ function isReasoningModel(model: string): boolean {
   return /(^|[/-])(o1|o3|o4)(-|$)/.test(id) || id.includes('reasoner') || id.includes('thinking');
 }
 
-function openAiBody(provider: ProviderConfig, system: string, messages: ChatHistoryMessage[], stream: boolean) {
+function isOpenAiReasoningModel(model: string): boolean {
+  return /(^|[/-])(o1|o3|o4)(-|$)/.test(model.toLowerCase());
+}
+
+function openAiBody(
+  provider: ProviderConfig,
+  system: string,
+  messages: ChatHistoryMessage[],
+  stream: boolean,
+  maxTokens?: number,
+) {
   const body: Record<string, unknown> = {
     model: requireModel(provider),
     messages: [{ role: 'system', content: system }, ...messages],
     stream,
   };
+  if (maxTokens && !stream) {
+    // OpenAI 的 o 系列推理模型改用 max_completion_tokens，仍发送 max_tokens 会被拒绝。
+    if (isOpenAiReasoningModel(provider.model)) body.max_completion_tokens = maxTokens;
+    else body.max_tokens = maxTokens;
+  }
   // 部分推理模型（o1/o3、deepseek-reasoner 等）不接受 temperature 参数。
   if (!isReasoningModel(provider.model)) body.temperature = 0.6;
   const effort = reasoningEffort(provider);
@@ -196,7 +214,7 @@ function openAiBody(provider: ProviderConfig, system: string, messages: ChatHist
 }
 
 async function requestOpenAi(options: RequestChatOptions): Promise<ProviderResponse> {
-  const { provider, system, messages, signal, onDelta } = options;
+  const { provider, system, messages, signal, onDelta, maxTokens } = options;
   const key = requireApiKey(provider);
   const stream = Boolean(onDelta);
   const response = await fetch(openAiEndpoint(provider.baseUrl), {
@@ -205,17 +223,18 @@ async function requestOpenAi(options: RequestChatOptions): Promise<ProviderRespo
       Authorization: `Bearer ${key}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(openAiBody(provider, system, messages, stream)),
+    body: JSON.stringify(openAiBody(provider, system, messages, stream, maxTokens)),
     signal,
   });
 
   if (!stream) {
     const data = (await fetchJsonFromResponse(response)) as {
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
     };
-    const text = data.choices?.[0]?.message?.content?.trim() ?? '';
+    const choice = data.choices?.[0];
+    const text = choice?.message?.content?.trim() ?? '';
     if (!text) throw new ProviderError('模型返回了空内容。');
-    return { text };
+    return { text, finishReason: choice?.finish_reason };
   }
 
   let text = '';
@@ -243,10 +262,11 @@ async function fetchJsonFromResponse(response: Response): Promise<unknown> {
 }
 
 async function requestAnthropic(options: RequestChatOptions): Promise<ProviderResponse> {
-  const { provider, system, messages, signal, onDelta } = options;
+  const { provider, system, messages, signal, onDelta, maxTokens } = options;
   const key = requireApiKey(provider);
   const stream = Boolean(onDelta);
   const budget = anthropicBudget(provider);
+  const outputLimit = Math.max(maxTokens ?? 0, budget ? budget + 4096 : 4096);
   const body: Record<string, unknown> = {
     model: requireModel(provider),
     system,
@@ -254,7 +274,7 @@ async function requestAnthropic(options: RequestChatOptions): Promise<ProviderRe
       role: message.role === 'assistant' ? 'assistant' : 'user',
       content: message.content,
     })),
-    max_tokens: budget ? budget + 4096 : 4096,
+    max_tokens: outputLimit,
     stream,
   };
   if (budget) {
@@ -278,6 +298,7 @@ async function requestAnthropic(options: RequestChatOptions): Promise<ProviderRe
   if (!stream) {
     const data = (await fetchJsonFromResponse(response)) as {
       content?: Array<{ type?: string; text?: string }>;
+      stop_reason?: string;
     };
     const text = (data.content ?? [])
       .filter((part) => part.type === 'text' && part.text)
@@ -285,7 +306,7 @@ async function requestAnthropic(options: RequestChatOptions): Promise<ProviderRe
       .join('')
       .trim();
     if (!text) throw new ProviderError('模型返回了空内容。');
-    return { text };
+    return { text, finishReason: data.stop_reason };
   }
 
   let text = '';
@@ -308,10 +329,10 @@ async function requestAnthropic(options: RequestChatOptions): Promise<ProviderRe
 }
 
 async function requestGemini(options: RequestChatOptions): Promise<ProviderResponse> {
-  const { provider, system, messages, signal, onDelta } = options;
+  const { provider, system, messages, signal, onDelta, maxTokens } = options;
   const key = requireApiKey(provider);
   const stream = Boolean(onDelta);
-  const generationConfig: Record<string, unknown> = { maxOutputTokens: 8192 };
+  const generationConfig: Record<string, unknown> = { maxOutputTokens: maxTokens ?? 8192 };
   const thinking = geminiThinking(provider);
   if (thinking) {
     generationConfig.thinkingConfig = thinking;
@@ -340,14 +361,15 @@ async function requestGemini(options: RequestChatOptions): Promise<ProviderRespo
 
   if (!stream) {
     const data = (await fetchJsonFromResponse(response)) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
     };
-    const text = (data.candidates?.[0]?.content?.parts ?? [])
+    const candidate = data.candidates?.[0];
+    const text = (candidate?.content?.parts ?? [])
       .map((part) => part.text ?? '')
       .join('')
       .trim();
     if (!text) throw new ProviderError('模型返回了空内容。');
-    return { text };
+    return { text, finishReason: candidate?.finishReason };
   }
 
   let text = '';

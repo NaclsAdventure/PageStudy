@@ -159,6 +159,64 @@ describe('generateSummary', () => {
     expect(summary.sections).toHaveLength(3);
   });
 
+  it('修复字符串内换行和尾逗号，避免合法知识卡被误判为无效 JSON', async () => {
+    mockContent(
+      '{"overview":"第一行\n第二行","tags":["测试"],"sections":[],"keyConcepts":[],}',
+    );
+    const summary = await generateSummary(request(), provider);
+    expect(summary.overview).toBe('第一行\n第二行');
+    expect(summary.tags).toEqual(['测试']);
+  });
+
+  it('输出被截断时自动用精简提示重试一次', async () => {
+    const responses = [
+      '{"overview":"这一次的输出被截断了',
+      JSON.stringify({ overview: '重试后完整生成。', tags: [], sections: [], keyConcepts: [] }),
+    ];
+    let index = 0;
+    const fetchMock = vi.fn(async () => {
+      const current = index;
+      index += 1;
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: { content: responses[Math.min(current, responses.length - 1)] },
+              ...(current === 0 ? { finish_reason: 'length' } : {}),
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const summary = await generateSummary(request(), provider);
+    expect(summary.overview).toBe('重试后完整生成。');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('JSON 结构损坏时也会自动重试一次', async () => {
+    const responses = [
+      '{"overview":"缺少结尾',
+      JSON.stringify({ overview: '重试修复成功。', tags: [], sections: [], keyConcepts: [] }),
+    ];
+    let index = 0;
+    const fetchMock = vi.fn(async () => {
+      const current = index;
+      index += 1;
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: responses[Math.min(current, responses.length - 1)] } }],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const summary = await generateSummary(request(), provider);
+    expect(summary.overview).toBe('重试修复成功。');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('缺少 overview 时拒绝保存半成品', async () => {
     mockSummary({ tags: ['x'], sections: [] });
     await expect(generateSummary(request(), provider)).rejects.toThrow('overview');
