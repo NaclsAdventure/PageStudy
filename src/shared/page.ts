@@ -53,5 +53,6 @@ export function createManualPage({ url, title, text }: ManualPageInput): PageCon
     contentHash: hashString(`${cleanUrl}\n${cleanTitle}\n${cleanText}`),
     outline,
     manual: true,
+    sourceType: 'manual',
   };
 }

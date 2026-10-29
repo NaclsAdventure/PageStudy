@@ -78,6 +78,7 @@ export function buildPageBrief(page: PageContext): string {
     `站点：${page.site}`,
     page.author ? `作者：${page.author}` : '',
     page.publishedAt ? `发布时间：${page.publishedAt}` : '',
+    page.sourceType === 'pdf' ? `类型：PDF（${page.pdfPageCount ?? '?'} 页）` : '',
     `全文：约 ${fullText.length} 字，${page.tokenEstimate ?? tokenEstimate(fullText)} tokens`,
     page.extractionQuality ? `抽取质量：${page.extractionQuality}` : '',
     '',
@@ -175,8 +176,23 @@ export function buildChatPageContext(
   mode: ContextMode,
   query: string,
   selections: SelectionContext[],
+  focusSectionId = '',
 ): string {
   if (!page || mode === 'off') return '（当前未启用网页上下文）';
+  if (page.sourceType === 'pdf') {
+    const section = flattenOutline(page.outline).find((node) => node.id === focusSectionId);
+    if (!section) {
+      return `${buildPageBrief(page)}\n\n（当前没有选择 PDF 小节；本轮不会发送 PDF 全文。）`;
+    }
+    return [
+      buildPageBrief(page),
+      '',
+      `当前只发送 PDF 小节《${section.title}》${section.page ? `（第 ${section.page} 页）` : ''}；其他小节和全文没有发送。`,
+      '<<<PDF_SECTION_TEXT>>>',
+      truncate(section.text, 14000),
+      '<<<END_PDF_SECTION_TEXT>>>',
+    ].join('\n');
+  }
   if (mode === 'selection') {
     return `${buildPageBrief(page)}\n\n（当前为“仅选段”模式，正文全文没有发送。）`;
   }

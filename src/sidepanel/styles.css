@@ -1318,6 +1318,7 @@ a {
 }
 
 .outline-title {
+  flex: 1;
   min-width: 0;
   padding: 0;
   border: 0;
@@ -1901,4 +1902,97 @@ a {
 
 .distill-actions .text-button {
   margin-left: auto;
+}
+
+/* PDF 小节与手动目录 */
+.pdf-section-select {
+  max-width: 190px;
+  text-overflow: ellipsis;
+}
+
+.pdf-focus-title {
+  display: block;
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-summary-hint {
+  display: inline-flex;
+  align-items: center;
+  min-height: 29px;
+  padding: 5px 9px;
+  border: 1px dashed #cfe7df;
+  border-radius: 7px;
+  background: var(--teal-soft);
+  color: var(--teal-dark);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.outline-summarize-button {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  padding: 1px 5px;
+  border: 1px solid #cfe7df;
+  border-radius: 4px;
+  background: #f4fbf8;
+  color: var(--teal-dark);
+  font-size: 9px;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.outline-summarize-button:hover:not(:disabled) {
+  border-color: var(--teal);
+  background: var(--teal-soft);
+}
+
+.outline-summarize-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.pdf-outline-editor {
+  margin-top: 13px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.pdf-outline-textarea {
+  width: 100%;
+  min-height: 112px;
+  box-sizing: border-box;
+  padding: 7px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.pdf-outline-textarea:focus {
+  border-color: var(--teal);
+  outline: none;
+}
+
+.pdf-outline-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 7px;
+}
+
+.pdf-outline-actions .muted {
+  font-size: 9px;
 }

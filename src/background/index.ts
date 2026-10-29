@@ -9,6 +9,7 @@ import type {
   ModelsResponse,
   RecordResponse,
   RuntimeMessage,
+  SectionSummaryResponse,
   SummarizeResponse,
   SyncEnqueueResponse,
   TestProviderResponse,
@@ -26,6 +27,7 @@ import { buildChatSystemPrompt, getAllSkills, getSkillById } from '../shared/ski
 import { asErrorMessage } from '../shared/utils';
 import { fetchModels, requestChat, testProvider } from './providers';
 import { generateSummary } from './summary';
+import { summarizeSection } from './section-summary';
 import { distillDiscussion } from './distill';
 import { checkBridge } from './bridge';
 import { appendDocument, writeDocument } from './documents';
@@ -191,6 +193,21 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
           const response: SummarizeResponse = { ok: true };
           try {
             response.summary = await generateSummary(message.request, getActiveProvider(settings));
+          } catch (error) {
+            response.ok = false;
+            response.error = asErrorMessage(error);
+          }
+          sendResponse(response);
+          return;
+        }
+        case 'PS_SUMMARIZE_SECTION': {
+          const settings = await loadSettings();
+          const response: SectionSummaryResponse = { ok: true };
+          try {
+            response.section = await summarizeSection(
+              message.request,
+              getActiveProvider(settings),
+            );
           } catch (error) {
             response.ok = false;
             response.error = asErrorMessage(error);
@@ -435,6 +452,7 @@ chrome.runtime.onConnect.addListener((port) => {
           payload.language,
           payload.contextMode ?? settings.context.mode,
           query,
+          payload.focusSectionId ?? '',
         );
         safePost({ type: 'start', requestId });
         await requestChat({

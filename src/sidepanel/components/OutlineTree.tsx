@@ -6,6 +6,8 @@ interface OutlineTreeProps {
   nodes: OutlineNode[];
   summary: PageSummary | null;
   onJump: (anchor: string) => void;
+  onSummarizeSection?: (node: OutlineNode) => void;
+  summarizingId?: string | null;
 }
 
 interface OutlineItemProps {
@@ -13,9 +15,18 @@ interface OutlineItemProps {
   summaryByNode: Map<string, SummarySection>;
   insightsByNode: Map<string, DialogueInsight[]>;
   onJump: (anchor: string) => void;
+  onSummarizeSection?: (node: OutlineNode) => void;
+  summarizingId?: string | null;
 }
 
-function OutlineItem({ node, summaryByNode, insightsByNode, onJump }: OutlineItemProps) {
+function OutlineItem({
+  node,
+  summaryByNode,
+  insightsByNode,
+  onJump,
+  onSummarizeSection,
+  summarizingId,
+}: OutlineItemProps) {
   const [open, setOpen] = useState(true);
   const summary = summaryByNode.get(node.id);
   const insights = insightsByNode.get(node.id) ?? [];
@@ -46,6 +57,20 @@ function OutlineItem({ node, summaryByNode, insightsByNode, onJump }: OutlineIte
         <button type="button" className="outline-title" onClick={() => onJump(node.anchor)}>
           {node.title}
         </button>
+        {onSummarizeSection && node.text.trim() ? (
+          <button
+            type="button"
+            className="outline-summarize-button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onSummarizeSection(node);
+            }}
+            disabled={Boolean(summarizingId) || !node.text.trim()}
+            title="只把这一节正文发给模型，生成这一节的笔记"
+          >
+            {summarizingId === node.id ? '总结中…' : summary ? '重新总结' : '总结本节'}
+          </button>
+        ) : null}
         {summary?.keyPoints.length ? <span className="outline-badge">{summary.keyPoints.length}</span> : null}
         {insights.length ? <span className="outline-badge outline-insight-badge">{insights.length} 讨论</span> : null}
       </div>
@@ -91,6 +116,8 @@ function OutlineItem({ node, summaryByNode, insightsByNode, onJump }: OutlineIte
               summaryByNode={summaryByNode}
               insightsByNode={insightsByNode}
               onJump={onJump}
+              onSummarizeSection={onSummarizeSection}
+              summarizingId={summarizingId}
             />
           ))}
         </div>
@@ -99,7 +126,13 @@ function OutlineItem({ node, summaryByNode, insightsByNode, onJump }: OutlineIte
   );
 }
 
-export default function OutlineTree({ nodes, summary, onJump }: OutlineTreeProps): ReactElement {
+export default function OutlineTree({
+  nodes,
+  summary,
+  onJump,
+  onSummarizeSection,
+  summarizingId,
+}: OutlineTreeProps): ReactElement {
   if (nodes.length === 0) {
     return <p className="muted">没有识别到标题层级。</p>;
   }
@@ -120,6 +153,8 @@ export default function OutlineTree({ nodes, summary, onJump }: OutlineTreeProps
           summaryByNode={summaryByNode}
           insightsByNode={insightsByNode}
           onJump={onJump}
+          onSummarizeSection={onSummarizeSection}
+          summarizingId={summarizingId}
         />
       ))}
     </div>

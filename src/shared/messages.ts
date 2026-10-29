@@ -12,10 +12,12 @@ import type {
   ModelOption,
   PageContext,
   PageSummary,
+  SectionSummaryRequest,
   SelectionContext,
   Settings,
   StudyRecord,
   SummaryRequest,
+  SummarySection,
   WikiPublishResponse,
 } from './types';
 
@@ -28,6 +30,7 @@ export type RuntimeMessage =
   | { type: 'PS_FETCH_MODELS' }
   | { type: 'PS_TEST_PROVIDER' }
   | { type: 'PS_SUMMARIZE'; request: SummaryRequest }
+  | { type: 'PS_SUMMARIZE_SECTION'; request: SectionSummaryRequest }
   | { type: 'PS_DISTILL_DISCUSSION'; request: DistillRequest }
   | { type: 'PS_BRIDGE_HEALTH' }
   | { type: 'PS_WRITE_DOCUMENT'; target: DocumentTarget; title: string; markdown: string; xml?: string; recordId?: string }
@@ -64,6 +67,12 @@ export interface SelectionResponse {
 export interface SummarizeResponse {
   ok: boolean;
   summary?: PageSummary;
+  error?: string;
+}
+
+export interface SectionSummaryResponse {
+  ok: boolean;
+  section?: SummarySection;
   error?: string;
 }
 

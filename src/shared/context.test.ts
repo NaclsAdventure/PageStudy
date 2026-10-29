@@ -74,6 +74,42 @@ function page(): PageContext {
   };
 }
 
+describe('PDF 小节上下文', () => {
+  it('只发送聚焦小节，不发送其他小节或全文', () => {
+    const pdf: PageContext = {
+      ...page(),
+      sourceType: 'pdf',
+      pdfPageCount: 2,
+      outline: [
+        { id: 's1', level: 1, title: '第一节', text: '第一节正文内容。', anchor: 'pdf-p1', page: 1, children: [] },
+        { id: 's2', level: 1, title: '第二节', text: '第二节正文内容。', anchor: 'pdf-p2', page: 2, children: [] },
+      ],
+      blocks: [
+        { id: 'p1', kind: 'paragraph', text: '第一节正文内容。', anchor: 'pdf-p1', headingPath: ['第一节'], page: 1 },
+        { id: 'p2', kind: 'paragraph', text: '第二节正文内容。', anchor: 'pdf-p2', headingPath: ['第二节'], page: 2 },
+      ],
+    };
+    const context = buildChatPageContext(pdf, 'full', '问题', [], 's2');
+    expect(context).toContain('第二节正文内容');
+    expect(context).not.toContain('第一节正文内容');
+    expect(context).not.toContain('FULL_TEXT');
+  });
+
+  it('没有选择小节时不发送 PDF 正文', () => {
+    const pdf: PageContext = {
+      ...page(),
+      sourceType: 'pdf',
+      pdfPageCount: 1,
+      outline: [
+        { id: 's1', level: 1, title: '第一节', text: '不应发送的正文。', anchor: 'pdf-p1', page: 1, children: [] },
+      ],
+    };
+    const context = buildChatPageContext(pdf, 'smart', '问题', [], '');
+    expect(context).not.toContain('不应发送的正文');
+    expect(context).toContain('不会发送 PDF 全文');
+  });
+});
+
 describe('pageText', () => {
   it('优先使用全文块而不是旧大纲', () => {
     const text = pageText(page());

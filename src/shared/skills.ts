@@ -75,8 +75,9 @@ export function buildChatSystemPrompt(
   language: string,
   mode: ContextMode = 'smart',
   query = '',
+  focusSectionId = '',
 ): string {
-  const pageBlock = buildChatPageContext(page, mode, query, selections);
+  const pageBlock = buildChatPageContext(page, mode, query, selections, focusSectionId);
 
   return [
     '你叫 PageStudy，是一位帮助读者精读网页、理解概念和沉淀学习笔记的中文阅读助教。',
@@ -89,8 +90,12 @@ export function buildChatSystemPrompt(
     '- 不确定的地方要明确说“不确定”，不要编造原文没有的事实。',
     '',
     '回答要求：',
-    '- 优先围绕用户当前聚焦的段落回答；需要引用原文时，指出章节标题或使用 [§锚点] 标注来源。',
-    '- 如果上下文只包含相关片段，不要假装已经看过全文；需要更多内容时明确说明。',
+    page?.sourceType === 'pdf'
+      ? '- 优先围绕当前 PDF 小节回答；只引用这一节的内容，不要假装看过其他小节或整份 PDF。'
+      : '- 优先围绕用户当前聚焦的段落回答；需要引用原文时，指出章节标题或使用 [§锚点] 标注来源。',
+    page?.sourceType === 'pdf'
+      ? '- 如果问题需要其他小节，明确说明当前只提供了这一节，并建议用户切换小节。'
+      : '- 如果上下文只包含相关片段，不要假装已经看过全文；需要更多内容时明确说明。',
     '- 结构清楚，避免空泛复述；需要时用短标题、列表或例子。',
     '- 如果用户的问题与页面无关，可以直接回答，但要说明上下文可能不足。',
     '',

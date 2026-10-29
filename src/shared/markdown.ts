@@ -66,10 +66,16 @@ export function recordToMarkdown(record: StudyRecord): string {
   }
 
   const summary = record.summary;
+  const isPdf = page.sourceType === 'pdf';
   lines.push('');
-  lines.push('## 30 秒速读');
+  lines.push(isPdf ? '## PDF 分节笔记' : '## 30 秒速读');
   lines.push('');
-  lines.push((summary?.thesis || summary?.overview || '（还没有生成知识卡）').trim());
+  lines.push(
+    (
+      (isPdf ? summary?.overview : summary?.thesis || summary?.overview) ||
+      (isPdf ? '（还没有生成小节笔记）' : '（还没有生成知识卡）')
+    ).trim(),
+  );
   if (summary?.quickRead && summary.quickRead.length > 0) {
     lines.push('');
     for (const point of summary.quickRead) lines.push(`- ${point}`);
@@ -101,7 +107,7 @@ export function recordToMarkdown(record: StudyRecord): string {
 
   if (page.outline.length > 0) {
     lines.push('');
-    lines.push('## 章节笔记');
+    lines.push(isPdf ? '## 小节笔记' : '## 章节笔记');
     const summaryMap = new Map((summary?.sections ?? []).map((section) => [section.outlineId, section]));
     walkOutline(page.outline, 0, summaryMap, lines);
   }
@@ -165,8 +171,14 @@ export function recordToMarkdown(record: StudyRecord): string {
 export function recordToAppendMarkdown(record: StudyRecord, now = Date.now()): string {
   const lines: string[] = ['', '---', '', `## 追加更新 · ${formatDate(now)}`];
   const summary = record.summary;
+  const isPdf = record.page.sourceType === 'pdf';
   if (summary) {
-    lines.push('', '### 30 秒速读', '', (summary.thesis || summary.overview).trim());
+    lines.push(
+      '',
+      isPdf ? '### PDF 分节笔记' : '### 30 秒速读',
+      '',
+      ((isPdf ? summary.overview : summary.thesis || summary.overview) || '').trim(),
+    );
     if (summary.quickRead && summary.quickRead.length > 0) {
       lines.push(...summary.quickRead.map((point) => `- ${point}`));
     }

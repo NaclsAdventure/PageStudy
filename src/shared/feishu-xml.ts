@@ -127,9 +127,15 @@ function renderBody(record: StudyRecord, includeTitle: boolean): string[] {
   }
   lines.push(renderMetadata(record));
   const summary = record.summary;
+  const isPdf = record.page.sourceType === 'pdf';
 
-  lines.push(heading(2, '30 秒速读'));
-  lines.push(paragraph(summary?.thesis || summary?.overview || '（还没有生成知识卡）'));
+  lines.push(heading(2, isPdf ? 'PDF 分节笔记' : '30 秒速读'));
+  lines.push(
+    paragraph(
+      (isPdf ? summary?.overview : summary?.thesis || summary?.overview) ||
+        (isPdf ? '（还没有生成小节笔记）' : '（还没有生成知识卡）'),
+    ),
+  );
   if (summary?.quickRead && summary.quickRead.length > 0) lines.push(list(summary.quickRead));
   if (summary?.tags && summary.tags.length > 0) {
     lines.push(paragraph(`标签：${summary.tags.map((tag) => `#${tag}`).join('  ')}`));
@@ -152,10 +158,10 @@ function renderBody(record: StudyRecord, includeTitle: boolean): string[] {
 
   const outline = record.page.outline;
   if (outline.length > 0) {
-    lines.push(heading(2, '章节笔记'));
+    lines.push(heading(2, isPdf ? '小节笔记' : '章节笔记'));
     lines.push(...renderOutline(outline, sectionMap(summary?.sections ?? [])));
   } else if (summary?.sections && summary.sections.length > 0) {
-    lines.push(heading(2, '章节笔记'));
+    lines.push(heading(2, isPdf ? '小节笔记' : '章节笔记'));
     lines.push(...renderSummarySections(summary.sections));
   }
 
@@ -200,10 +206,11 @@ export function recordToFeishuXml(record: StudyRecord): string {
 
 export function recordToFeishuAppendXml(record: StudyRecord, now = Date.now()): string {
   const summary = record.summary;
+  const isPdf = record.page.sourceType === 'pdf';
   const lines: string[] = [heading(2, `追加更新 · ${formatDate(now)}`)];
   if (summary) {
-    lines.push(heading(3, '30 秒速读'));
-    lines.push(paragraph(summary.thesis || summary.overview));
+    lines.push(heading(3, isPdf ? 'PDF 分节笔记' : '30 秒速读'));
+    lines.push(paragraph((isPdf ? summary.overview : summary.thesis || summary.overview) || ''));
     if (summary.quickRead && summary.quickRead.length > 0) lines.push(list(summary.quickRead));
     if (summary.keyConcepts.length > 0) {
       lines.push(heading(3, '概念卡'));

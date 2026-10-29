@@ -161,6 +161,8 @@ export interface OutlineNode {
   title: string;
   text: string;
   anchor: string;
+  /** PDF 小节起始页；网页大纲没有该字段。 */
+  page?: number;
   children: OutlineNode[];
 }
 
@@ -178,6 +180,8 @@ export interface PageBlock {
   anchor: string;
   headingPath: string[];
   level?: number;
+  /** PDF 文本块所在页码；网页块没有该字段。 */
+  page?: number;
 }
 
 export interface PageImage {
@@ -210,6 +214,10 @@ export interface PageContext {
   tokenEstimate?: number;
   extractionQuality?: 'high' | 'medium' | 'low';
   manual?: boolean;
+  /** 页面来源；PDF 直接由扩展解析，不经过 content script。 */
+  sourceType?: 'web' | 'pdf' | 'manual';
+  /** PDF 总页数。 */
+  pdfPageCount?: number;
 }
 
 export interface SelectionContext {
@@ -365,6 +373,13 @@ export interface DiscussionSection {
   questions: string[];
 }
 
+export interface SectionSummaryRequest {
+  page: PageContext;
+  section: OutlineNode;
+  language: string;
+  model: string;
+}
+
 export interface DistillRequest {
   page: PageContext;
   section: DiscussionSection;
@@ -382,6 +397,8 @@ export interface ChatRequest {
   language: string;
   model: string;
   contextMode: ContextMode;
+  /** PDF 当前聚焦小节；有值时只发送该节，不发送全文。 */
+  focusSectionId?: string;
   query?: string;
 }
 

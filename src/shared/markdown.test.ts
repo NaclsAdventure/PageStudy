@@ -134,6 +134,24 @@ describe('recordToMarkdown', () => {
     expect(markdown).toContain('## 我的判断');
     expect(markdown).toContain('无大纲笔记');
   });
+
+  it('PDF 导出使用分节笔记，不冒充全文速读', () => {
+    const record = buildRecord();
+    record.page.sourceType = 'pdf';
+    record.page.url = 'https://example.com/paper.pdf';
+    record.summary = {
+      ...record.summary!,
+      overview: 'PDF 分节笔记：已总结 1 节。',
+      thesis: '不应导出的全文论断。',
+      quickRead: ['引言要点'],
+    };
+    const markdown = recordToMarkdown(record);
+    expect(markdown).toContain('## PDF 分节笔记');
+    expect(markdown).toContain('PDF 分节笔记：已总结 1 节。');
+    expect(markdown).toContain('## 小节笔记');
+    expect(markdown).not.toContain('## 30 秒速读');
+    expect(markdown).not.toContain('不应导出的全文论断。');
+  });
 });
 
 describe('recordToFeishuAppendMarkdown', () => {

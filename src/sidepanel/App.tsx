@@ -12,10 +12,12 @@ import type {
   PageContext,
   PageSummary,
   PublicSettings,
+  SectionSummaryRequest,
   SelectionContext,
   Skill,
   StudyRecord,
   SummaryRequest,
+  SummarySection,
 } from '../shared/types';
 import {
   createId,
@@ -27,6 +29,7 @@ import {
 import { flattenOutline, getAllSkills, getSkillById } from '../shared/skills';
 import { recordToMarkdown } from '../shared/markdown';
 import { createManualPage, isRestrictedPageUrl } from '../shared/page';
+import { applyPdfManualOutline, isPdfUrl, type PdfManualSection } from '../shared/pdf';
 import { deleteRecord, findRecordsByUrl, getRecord, saveRecord } from '../shared/db';
 import {
   DOCUMENT_TARGETS,
@@ -46,11 +49,14 @@ import {
   type ChatPortRequest,
   type DistillResponse,
   type PageContextResponse,
+  type SectionSummaryResponse,
   type SelectionResponse,
   type SummarizeResponse,
 } from '../shared/messages';
 import OutlineTree from './components/OutlineTree';
+import PdfOutlineEditor from './components/PdfOutlineEditor';
 import RichText from './components/RichText';
+import { loadPdfPage } from './pdf-loader';
 import './styles.css';
 
 interface PublicSettingsResponse {
@@ -170,6 +176,8 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   const [record, setRecord] = useState<StudyRecord | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [sectionSummaryId, setSectionSummaryId] = useState<string | null>(null);
+  const [pdfSectionId, setPdfSectionId] = useState('');
   const [docLoading, setDocLoading] = useState(false);
   const [docTarget, setDocTarget] = useState<DocumentTarget>('feishu');
   const [sideTab, setSideTab] = useState<SideTab>('chat');
@@ -321,6 +329,7 @@ export default function App() {
           setContexts([]);
         }
         setSelection(null);
+        setPdfSectionId('');
       };
 
       if (!nextUrl) {
@@ -356,30 +365,58 @@ export default function App() {
         return;
       }
 
+      const likelyPdf =
+        isPdfUrl(nextUrl) || /\.pdf(?:$|[?#])/i.test(nextTitle.trim());
+      let pdfError = '';
+      if (likelyPdf) {
+        try {
+          const pdfPage = await loadPdfPage(nextUrl, nextTitle);
+          if (pdfPage) {
+            if (loadSeqRef.current !== seq) return;
+            setManualMode(false);
+            setPage(pdfPage);
+            const found = await findRecordForPage(pdfPage);
+            if (loadSeqRef.current !== seq) return;
+            await loadFoundRecord(found, pdfPage);
+            setSideTab((found?.page ?? pdfPage).outline.length > 0 ? 'chat' : 'record');
+            return;
+          }
+        } catch (error) {
+          pdfError = asErrorMessage(error);
+        }
+      }
+      if (loadSeqRef.current !== seq) return;
+
       let nextPage: PageContext | null = null;
       let contentError = '';
-      try {
-        const response = await sendTabMessage<PageContextResponse>(nextTabId, { type: 'PS_GET_PAGE_CONTEXT' });
-        if (response.ok && response.page) nextPage = response.page;
-        else throw new Error(response.error ?? '页面内容读取失败');
-      } catch (error) {
-        contentError = asErrorMessage(error);
+      // PDF 已明确解析失败时不再让 content script 去读 PDF 占位页，否则会把空壳当普通网页。
+      if (!pdfError) {
+        try {
+          const response = await sendTabMessage<PageContextResponse>(nextTabId, { type: 'PS_GET_PAGE_CONTEXT' });
+          if (response.ok && response.page) nextPage = response.page;
+          else throw new Error(response.error ?? '页面内容读取失败');
+        } catch (error) {
+          contentError = asErrorMessage(error);
+        }
       }
       if (loadSeqRef.current !== seq) return;
 
       if (!nextPage) {
+        const failureText = pdfError ? `PDF 读取失败：${pdfError}` : contentError;
         const found = (await findRecordsByUrl(nextUrl)).sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
         if (loadSeqRef.current !== seq) return;
         if (found) {
           await loadFoundRecord(found, null);
-          setPageError(`无法重新读取网页正文：${contentError}。当前显示已保存的快照。`);
+          setPageError(`${failureText}。当前显示已保存的快照。`);
         } else {
           await loadFoundRecord(null, null);
           setManualMode(true);
           setManualTitle(nextTitle || '手动摘录');
           setManualUrl(nextUrl);
           setManualText('');
-          setPageError(`无法读取页面正文：${contentError}。可以刷新网页、重新加载扩展，或在下方手动摘录。`);
+          setPageError(
+            `${failureText}。可以刷新网页、重新加载扩展，或把要学习的文字粘到下方手动摘录。`,
+          );
           setSideTab('record');
         }
         return;
@@ -592,6 +629,14 @@ export default function App() {
       showNotice('请先在设置页配置模型 API Key。', 'error');
       return;
     }
+    if (isPdf && !pdfFocusSection?.text.trim()) {
+      showNotice('请先在记录页补 PDF 目录，或选择一个有正文的小节。', 'error');
+      return;
+    }
+    const messageAnchor = pdfFocusSection?.anchor ?? selection?.anchor;
+    const messageHeadingPath = pdfFocusSection
+      ? [pdfFocusSection.title]
+      : selection?.headingPath;
     const requestId = createId('req');
     const userMessage: ChatMessage = {
       id: createId('user'),
@@ -599,8 +644,8 @@ export default function App() {
       content: text,
       createdAt: Date.now(),
       skillId,
-      anchor: selection?.anchor,
-      headingPath: selection?.headingPath,
+      anchor: messageAnchor,
+      headingPath: messageHeadingPath,
     };
     const assistantMessage: ChatMessage = {
       id: `assistant_${requestId}`,
@@ -608,8 +653,8 @@ export default function App() {
       content: '',
       createdAt: Date.now(),
       skillId,
-      anchor: selection?.anchor,
-      headingPath: selection?.headingPath,
+      anchor: messageAnchor,
+      headingPath: messageHeadingPath,
     };
     const history: ChatHistoryMessage[] = [...messagesRef.current, userMessage]
       .filter((message) => message.content.trim() && !message.error)
@@ -619,12 +664,13 @@ export default function App() {
     const payload: ChatRequest = {
       requestId,
       messages: history,
-      page,
-      selections: activeSelections(),
+      page: activePage,
+      selections: isPdf ? [] : activeSelections(),
       skill,
       language: settings?.outputLanguage ?? '中文',
       model: provider?.model ?? '',
-      contextMode,
+      contextMode: isPdf ? 'selection' : contextMode,
+      focusSectionId: isPdf ? pdfFocusSection?.id : undefined,
       query: text,
     };
     applyMessages((previous) => [...previous, userMessage, assistantMessage]);
@@ -682,7 +728,11 @@ export default function App() {
       showNotice('当前页面还没有可记录的内容。', 'error');
       return null;
     }
-    if (!freshPage.manual) {
+    if (freshPage.sourceType === 'pdf' && freshPage.outline.length === 0) {
+      showNotice('这个 PDF 还没有目录；请先在记录页按页码范围补目录。', 'error');
+      return null;
+    }
+    if (!freshPage.manual && freshPage.sourceType !== 'pdf') {
       try {
         const response = await sendTabMessage<PageContextResponse>(tabId, { type: 'PS_GET_PAGE_CONTEXT' });
         if (response.ok && response.page) freshPage = response.page;
@@ -721,6 +771,10 @@ export default function App() {
   };
 
   const summarizeRecord = async (target: StudyRecord) => {
+    if (target.page.sourceType === 'pdf') {
+      showNotice('PDF 按小节总结：请在下方选择一个小节，点“总结本节”。', 'info');
+      return;
+    }
     if (!hasApiKey) {
       showNotice('请先在设置页配置模型 API Key。', 'error');
       return;
@@ -766,11 +820,108 @@ export default function App() {
     }
   };
 
+  const applyPdfOutline = (entries: PdfManualSection[]) => {
+    if (!activePage || activePage.sourceType !== 'pdf') {
+      throw new Error('当前页面不是 PDF。');
+    }
+    const next = applyPdfManualOutline(activePage, entries);
+    setPage(next);
+    setPageError('');
+    setPdfSectionId(next.outline[0]?.id ?? '');
+    const current = recordRef.current;
+    if (current && current.page.sourceType === 'pdf' && current.page.outline.length === 0) {
+      const nextRecord: StudyRecord = {
+        ...current,
+        page: next,
+        updatedAt: Date.now(),
+      };
+      void persistRecord(nextRecord);
+    }
+    setSideTab('record');
+    showNotice(`已应用目录：${next.outline.length} 个小节。`, 'success');
+  };
+
+  const summarizePdfSection = async (section: OutlineNode) => {
+    const current = recordRef.current;
+    if (!current) {
+      showNotice('请先“仅保存原文”，再逐节总结。', 'info');
+      return;
+    }
+    if (current.page.sourceType !== 'pdf') return;
+    if (!hasApiKey) {
+      showNotice('请先在设置页配置模型 API Key。', 'error');
+      return;
+    }
+    if (!section.text.trim()) {
+      showNotice('这一节没有可总结的文字。', 'info');
+      return;
+    }
+    setSectionSummaryId(section.id);
+    try {
+      const request: SectionSummaryRequest = {
+        page: current.page,
+        section,
+        language: settings?.outputLanguage ?? '中文',
+        model: provider?.model ?? '',
+      };
+      const response = await sendRuntimeMessage<SectionSummaryResponse>({
+        type: 'PS_SUMMARIZE_SECTION',
+        request,
+      });
+      if (!response.ok || !response.section) {
+        throw new Error(response.error ?? '生成小节笔记失败');
+      }
+      if (recordRef.current?.id !== current.id) return;
+      const latest = recordRef.current;
+      if (!latest) return;
+      const existing = latest.summary;
+      const sections = [...(existing?.sections ?? [])];
+      const index = sections.findIndex(
+        (item) => item.outlineId === response.section?.outlineId,
+      );
+      if (index >= 0) sections[index] = response.section;
+      else sections.push(response.section);
+      const summarizedCount = sections.filter((item) => item.summary.trim()).length;
+      const nextSummary: PageSummary = {
+        overview: `PDF 分节笔记：已总结 ${summarizedCount} 节。`,
+        thesis: existing?.thesis || '按小节整理 PDF 笔记，未生成全文总览。',
+        quickRead: uniqueStrings(sections.flatMap((item) => item.keyPoints)).slice(0, 6),
+        tags: existing?.tags ?? [],
+        sections,
+        keyConcepts: existing?.keyConcepts ?? [],
+        argumentMap: existing?.argumentMap ?? [],
+        dialogueInsights: existing?.dialogueInsights ?? [],
+        generatedAt: Date.now(),
+        model: provider?.model ?? existing?.model ?? '',
+      };
+      const nextRecord: StudyRecord = {
+        ...latest,
+        summary: nextSummary,
+        status: 'ready',
+        error: null,
+        updatedAt: Date.now(),
+      };
+      await persistRecord(nextRecord);
+      void queueAutoSync(nextRecord);
+      void queueWikiAutoSync();
+      showNotice(`已生成《${section.title}》的小节笔记。`, 'success');
+    } catch (error) {
+      showNotice(asErrorMessage(error), 'error');
+    } finally {
+      setSectionSummaryId(null);
+    }
+  };
+
   const openDistill = (turn: DiscussionTurn) => {
     const current = recordRef.current;
     if (!current) return;
     if (!current.summary) {
-      showNotice('先生成全文总览，再把讨论收进本节。', 'info');
+      showNotice(
+        current.page.sourceType === 'pdf'
+          ? '先总结至少一个小节，再把讨论收进本节。'
+          : '先生成全文总览，再把讨论收进本节。',
+        'info',
+      );
       return;
     }
     const match = findTurnSection(turn.user, current.page.outline);
@@ -943,7 +1094,12 @@ export default function App() {
     const current = recordRef.current;
     if (!current) return;
     if (!current.summary) {
-      showNotice('先生成全文总览，再更新本节笔记。', 'info');
+      showNotice(
+        current.page.sourceType === 'pdf'
+          ? '先总结至少一个小节，再更新本节笔记。'
+          : '先生成全文总览，再更新本节笔记。',
+        'info',
+      );
       return;
     }
     const pending = findPendingTurn(current);
@@ -984,7 +1140,17 @@ export default function App() {
   const openWiki = () => openDashboard('#wiki');
 
   const jumpToAnchor = (anchor: string) => {
-    if (!anchor || tabId === null) return;
+    if (!anchor) return;
+    const targetPage = recordRef.current?.page ?? page;
+    if (targetPage?.sourceType === 'pdf') {
+      const section = flattenOutline(targetPage.outline).find((node) => node.anchor === anchor);
+      if (section) {
+        setPdfSectionId(section.id);
+        setSideTab('chat');
+      }
+      return;
+    }
+    if (tabId === null) return;
     void sendTabMessage<{ ok: boolean }>(tabId, { type: 'PS_SCROLL_TO_ANCHOR', anchor }).catch(() => {
       showNotice('当前页面已经变化，无法定位到该章节。', 'error');
     });
@@ -1147,10 +1313,22 @@ export default function App() {
   };
 
   const selectedSkill = useMemo(() => getSkillById(skills, skillId), [skills, skillId]);
-  const outline = record?.page.outline ?? page?.outline ?? [];
+  const activePage = record?.page ?? page;
+  const outline = activePage?.outline ?? [];
   const summary = record?.summary ?? null;
-  const readingMinutes = page ? Math.max(1, Math.round(page.wordCount / 450)) : 0;
+  const isPdf = activePage?.sourceType === 'pdf';
+  const pdfNeedsOutline = isPdf && outline.length === 0;
+  const readingMinutes = activePage ? Math.max(1, Math.round(activePage.wordCount / 450)) : 0;
   const flatOutline = useMemo(() => flattenOutline(outline), [outline]);
+  const pdfFocusSection = useMemo(
+    () =>
+      isPdf
+        ? flatOutline.find((node) => node.id === pdfSectionId) ??
+          flatOutline.find((node) => Boolean(node.text.trim())) ??
+          null
+        : null,
+    [flatOutline, isPdf, pdfSectionId],
+  );
   const distillSections = useMemo(
     () =>
       flatOutline.length > 0
@@ -1189,23 +1367,28 @@ export default function App() {
         {pageLoading ? (
           <div className="page-card-loading">
             <span className="spinner" />
-            <span>正在读取网页大纲…</span>
+            <span>正在读取页面或 PDF 大纲…</span>
           </div>
-        ) : page ? (
+        ) : activePage ? (
           <>
             <div className="page-card-kicker">
-              {page.manual ? '手动摘录' : safeHostname(page.url)}
-              {page.author ? ` · ${page.author}` : ''}
-              {page.publishedAt ? ` · ${page.publishedAt.slice(0, 10)}` : ''}
+              {activePage.manual
+                ? '手动摘录'
+                : isPdf
+                  ? `PDF · ${activePage.pdfPageCount ?? '?'} 页`
+                  : safeHostname(activePage.url)}
+              {activePage.author ? ` · ${activePage.author}` : ''}
+              {activePage.publishedAt ? ` · ${activePage.publishedAt.slice(0, 10)}` : ''}
             </div>
-            <h1 className="page-title" title={page.title}>
-              {page.title}
+            <h1 className="page-title" title={activePage.title}>
+              {activePage.title}
             </h1>
             <div className="page-meta">
-              <span>{flattenOutline(outline).length} 个标题</span>
-              <span>{page.wordCount.toLocaleString()} 字</span>
+              <span>{flattenOutline(outline).length} {isPdf ? '个小节' : '个标题'}</span>
+              <span>{activePage.wordCount.toLocaleString()} 字</span>
               <span>约 {readingMinutes} 分钟</span>
-              {page.manual ? <span>手动摘录</span> : null}
+              {isPdf ? <span>只按小节发送</span> : null}
+              {activePage.manual ? <span>手动摘录</span> : null}
               {record ? <span className="record-state">已记录</span> : null}
             </div>
           </>
@@ -1253,32 +1436,61 @@ export default function App() {
           <div className="context-bar">
             <div className="context-head">
               <span>上下文</span>
-              <select
-                className="context-mode-select"
-                aria-label="上下文范围"
-                value={contextMode}
-                onChange={(event) => changeContextMode(event.target.value as ContextMode)}
-                disabled={streaming}
-              >
-                <option value="smart">智能全文</option>
-                <option value="full">始终全文</option>
-                <option value="selection">仅选段</option>
-                <option value="off">关闭</option>
-              </select>
+              {isPdf ? (
+                <select
+                  className="context-mode-select pdf-section-select"
+                  aria-label="PDF 当前小节"
+                  value={pdfFocusSection?.id ?? ''}
+                  onChange={(event) => setPdfSectionId(event.target.value)}
+                  disabled={streaming || flatOutline.length === 0}
+                >
+                  {flatOutline.length === 0 ? <option value="">先补 PDF 目录</option> : null}
+                  {flatOutline.map((node) => (
+                    <option key={node.id} value={node.id}>
+                      {`${'　'.repeat(Math.max(0, node.level - 1))}${node.title}${node.page ? ` · P${node.page}` : ''}`}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <select
+                  className="context-mode-select"
+                  aria-label="上下文范围"
+                  value={contextMode}
+                  onChange={(event) => changeContextMode(event.target.value as ContextMode)}
+                  disabled={streaming}
+                >
+                  <option value="smart">智能全文</option>
+                  <option value="full">始终全文</option>
+                  <option value="selection">仅选段</option>
+                  <option value="off">关闭</option>
+                </select>
+              )}
             </div>
             <div className="context-meta">
-              {contextReady
-                ? `已索引 ${indexedChars.toLocaleString('zh-CN')} 字${imageCount > 0 ? ` · ${imageCount} 张图` : ''}${
-                    page?.tokenEstimate ? ` · 约 ${page.tokenEstimate.toLocaleString('zh-CN')} tokens` : ''
-                  }`
-                : '尚未读取到正文'}
+              {isPdf
+                ? pdfFocusSection
+                  ? `PDF · ${activePage?.pdfPageCount ?? '?'} 页 · 当前小节 ${pdfFocusSection.text.length.toLocaleString('zh-CN')} 字，全文不会发送`
+                  : pdfNeedsOutline
+                    ? 'PDF 已解析，等待补目录'
+                    : 'PDF 没有可选小节'
+                : contextReady
+                  ? `已索引 ${indexedChars.toLocaleString('zh-CN')} 字${imageCount > 0 ? ` · ${imageCount} 张图` : ''}${
+                      page?.tokenEstimate ? ` · 约 ${page.tokenEstimate.toLocaleString('zh-CN')} tokens` : ''
+                    }`
+                  : '尚未读取到正文'}
             </div>
-            {contextMode === 'off' ? (
+            {isPdf ? (
+              <p className="context-empty">
+                {pdfNeedsOutline
+                  ? '这个 PDF 没有书签目录；请到“记录”页按页码范围补目录，再选择小节提问。'
+                  : '每次只发送当前小节；切换小节不会把其他小节带入。'}
+              </p>
+            ) : contextMode === 'off' ? (
               <p className="context-empty">网页正文不会发送；选中段落仍可作为聚焦。</p>
             ) : contextMode === 'selection' ? (
               <p className="context-empty">只发送当前聚焦段和页面简报，不发送全文。</p>
             ) : null}
-            {contexts.length > 0 ? (
+            {!isPdf && contexts.length > 0 ? (
               <div className="context-chips">
                 {contexts.map((item, index) => (
                   <span className="context-chip" key={`${item.anchor}-${index}`} title={item.text}>
@@ -1290,7 +1502,24 @@ export default function App() {
                 ))}
               </div>
             ) : null}
-            {selection ? (
+            {isPdf ? (
+              pdfFocusSection ? (
+                <div className="selection-preview focus-preview">
+                  <div>
+                    <span className="selection-label">当前小节 · 只发送这一节</span>
+                    <strong className="pdf-focus-title">{pdfFocusSection.title}</strong>
+                    <p>{truncate(pdfFocusSection.text, 160)}</p>
+                    <span className="selection-path">
+                      {pdfFocusSection.page ? `第 ${pdfFocusSection.page} 页` : 'PDF'} ·{' '}
+                      {pdfFocusSection.text.length.toLocaleString('zh-CN')} 字
+                    </span>
+                  </div>
+                  <span className="focus-badge">本节</span>
+                </div>
+              ) : (
+                <p className="context-empty">先补目录，或选择一个小节。</p>
+              )
+            ) : selection ? (
               <div className="selection-preview focus-preview">
                 <div>
                   <span className="selection-label">当前聚焦 · 自动带入</span>
@@ -1326,8 +1555,12 @@ export default function App() {
             {messages.length === 0 ? (
               <div className="chat-empty">
                 <div className="empty-mark">“</div>
-                <h2>把文章变成自己的理解</h2>
-                <p>直接提问即可。全文会在提问时按上下文范围自动带入；选中段落会自动聚焦，记录后生成知识卡。</p>
+                <h2>{isPdf ? '一节一节读透 PDF' : '把文章变成自己的理解'}</h2>
+                <p>
+                  {isPdf
+                    ? '先选择一个小节，再围绕这一节提问。每次只发送本节正文；记录后可以逐节点“总结本节”。'
+                    : '直接提问即可。全文会在提问时按上下文范围自动带入；选中段落会自动聚焦，记录后生成知识卡。'}
+                </p>
                 <div className="prompt-suggestions">
                   {['这段话的核心论点是什么？', '用一个例子解释这个概念', '作者有哪些没有证明的假设？'].map(
                     (prompt) => (
@@ -1416,9 +1649,15 @@ export default function App() {
                   sendChat();
                 }
               }}
-              placeholder="基于全文提问；选中文字会自动聚焦…"
+              placeholder={
+                isPdf
+                  ? pdfFocusSection
+                    ? '只问当前小节；不会发送 PDF 全文…'
+                    : '先补 PDF 目录，或选择一个小节…'
+                  : '基于全文提问；选中文字会自动聚焦…'
+              }
               rows={2}
-              disabled={streaming}
+              disabled={streaming || (isPdf && !pdfFocusSection?.text.trim())}
             />
             <div className="composer-actions">
               <span>Enter 发送 · Shift+Enter 换行</span>
@@ -1427,7 +1666,12 @@ export default function App() {
                   停止
                 </button>
               ) : (
-                <button type="button" className="send-button" onClick={sendChat} disabled={!input.trim()}>
+                <button
+                  type="button"
+                  className="send-button"
+                  onClick={sendChat}
+                  disabled={!input.trim() || (isPdf && !pdfFocusSection?.text.trim())}
+                >
                   发送
                 </button>
               )}
@@ -1441,7 +1685,11 @@ export default function App() {
               record={record}
               summary={summary}
               outline={outline}
+              isPdf={isPdf}
               summaryLoading={summaryLoading}
+              sectionSummaryId={sectionSummaryId}
+              onSummarizeSection={(node) => void summarizePdfSection(node)}
+              onApplyPdfOutline={applyPdfOutline}
               docLoading={docLoading}
               bridgeHealth={bridgeHealth}
               docTarget={docTarget}
@@ -1469,11 +1717,23 @@ export default function App() {
           ) : (
             <div className="record-empty">
               <div className="record-empty-icon">▤</div>
-              <h2>{manualMode ? '手动摘录浏览器内置页' : '记录本页，生成知识卡'}</h2>
+              <h2>
+                {manualMode
+                  ? '手动摘录浏览器内置页'
+                  : pdfNeedsOutline
+                    ? 'PDF 缺少书签目录'
+                    : isPdf
+                      ? '保存 PDF，按小节精读'
+                      : '记录本页，生成知识卡'}
+              </h2>
               <p>
                 {manualMode
                   ? '浏览器内置页面不能被扩展自动读取。把标题、地址和要学习的段落粘贴到下面，PageStudy 仍会保存记录、生成知识卡并归入 Wiki。'
-                  : '点击“记录本页”会读取全文和图片，一次生成速读、核心论证、概念卡、章节笔记和问答沉淀。网页以后变化，记录仍保留当时的快照。'}
+                  : pdfNeedsOutline
+                    ? '扩展已经解析出 PDF 文字层，但这个文件没有可读取的书签目录。请补一份小节页码范围，之后每次只聚焦一个小节。'
+                    : isPdf
+                      ? '先保存 PDF 文字快照；之后在记录页逐个点击“总结本节”，每次只发送一个小节，不发送整份 PDF。'
+                      : '点击“记录本页”会读取全文和图片，一次生成速读、核心论证、概念卡、章节笔记和问答沉淀。网页以后变化，记录仍保留当时的快照。'}
               </p>
               {manualMode ? (
                 <ManualCaptureFields
@@ -1484,25 +1744,50 @@ export default function App() {
                   onUrlChange={setManualUrl}
                   onTextChange={setManualText}
                 />
+              ) : pdfNeedsOutline ? (
+                <PdfOutlineEditor
+                  pageCount={activePage?.pdfPageCount ?? 0}
+                  onApply={applyPdfOutline}
+                />
               ) : outline.length > 0 ? (
                 <div className="outline-preview">
                   <div className="section-heading">
-                    <span>网页大纲</span>
+                    <span>{isPdf ? 'PDF 小节' : '网页大纲'}</span>
                     <span>{outline.length} 节</span>
                   </div>
                   <OutlineTree nodes={outline.slice(0, 4)} summary={null} onJump={jumpToAnchor} />
                   {outline.length > 4 ? <p className="muted">还有更多章节，记录后完整查看。</p> : null}
                 </div>
               ) : null}
-              <div className="record-actions">
-                <button type="button" className="primary-button" onClick={() => void recordPage(true)}>
-                  {manualMode ? '记录摘录并生成知识卡' : '记录本页'}
-                </button>
-                <button type="button" className="secondary-button" onClick={() => void recordPage(false)}>
-                  仅保存原文
-                </button>
-              </div>
-              {!hasApiKey ? <p className="muted">配置 API Key 后会自动生成知识卡；“仅保存原文”不需要模型。</p> : null}
+              {!pdfNeedsOutline ? (
+                <div className="record-actions">
+                  {isPdf ? (
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={() => void recordPage(false)}
+                    >
+                      保存 PDF 原文
+                    </button>
+                  ) : (
+                    <button type="button" className="primary-button" onClick={() => void recordPage(true)}>
+                      {manualMode ? '记录摘录并生成知识卡' : '记录本页'}
+                    </button>
+                  )}
+                  {!isPdf ? (
+                    <button type="button" className="secondary-button" onClick={() => void recordPage(false)}>
+                      仅保存原文
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+              {!hasApiKey && !pdfNeedsOutline ? (
+                <p className="muted">
+                  {isPdf
+                    ? '保存 PDF 不需要模型；逐节总结前请配置 API Key。'
+                    : '配置 API Key 后会自动生成知识卡；“仅保存原文”不需要模型。'}
+                </p>
+              ) : null}
             </div>
           )}
         </main>
@@ -1700,7 +1985,11 @@ interface RecordViewProps {
   record: StudyRecord;
   summary: PageSummary | null;
   outline: PageContext['outline'];
+  isPdf: boolean;
   summaryLoading: boolean;
+  sectionSummaryId: string | null;
+  onSummarizeSection: (node: OutlineNode) => void;
+  onApplyPdfOutline: (entries: PdfManualSection[]) => void;
   docLoading: boolean;
   bridgeHealth: BridgeHealth | null;
   docTarget: DocumentTarget;
@@ -1730,7 +2019,11 @@ function RecordView({
   record,
   summary,
   outline,
+  isPdf,
   summaryLoading,
+  sectionSummaryId,
+  onSummarizeSection,
+  onApplyPdfOutline,
   docLoading,
   bridgeHealth,
   docTarget,
@@ -1796,22 +2089,40 @@ function RecordView({
 
       {record.error ? <div className="error-box">{record.error}</div> : null}
 
+      {isPdf && outline.length === 0 ? (
+        <PdfOutlineEditor
+          key={record.page.contentHash}
+          pageCount={record.page.pdfPageCount ?? 0}
+          onApply={onApplyPdfOutline}
+        />
+      ) : null}
+
       <div className="record-actions">
-        <button
-          type="button"
-          className="primary-button"
-          onClick={onResummarize}
-          disabled={summaryLoading}
-          title="重新读取全文，生成整份知识卡"
-        >
-          {summaryLoading ? '生成中…' : summary ? '重新生成全文总览' : '生成全文总览'}
-        </button>
+        {isPdf ? (
+          <span className="pdf-summary-hint" title="PDF 只按小节总结，不发送整份全文">
+            PDF 按小节总结
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="primary-button"
+            onClick={onResummarize}
+            disabled={summaryLoading}
+            title="重新读取全文，生成整份知识卡"
+          >
+            {summaryLoading ? '生成中…' : summary ? '重新生成全文总览' : '生成全文总览'}
+          </button>
+        )}
         <button
           type="button"
           className="secondary-button"
           onClick={onUpdateSection}
           disabled={summaryLoading || !summary}
-          title="把最近一轮还没整理的讨论收进对应章节"
+          title={
+            isPdf
+              ? '把最近一轮讨论收进对应 PDF 小节'
+              : '把最近一轮还没整理的讨论收进对应章节'
+          }
         >
           更新本节笔记
         </button>
@@ -1898,7 +2209,28 @@ function RecordView({
         ) : null}
       </section>
 
-      {summary ? (
+      {isPdf && outline.length > 0 ? (
+        <section className="record-section">
+          <div className="section-heading">
+            <span>PDF 分节笔记</span>
+            <span>
+              {(summary?.sections ?? []).filter((section) => section.summary.trim()).length}/{outline.length} 节
+            </span>
+          </div>
+          <p className="muted">
+            每次只把一个小节发给模型；点小节右侧的“总结本节”，不会重新上传整份 PDF。
+          </p>
+          <OutlineTree
+            nodes={outline}
+            summary={summary}
+            onJump={onJump}
+            onSummarizeSection={onSummarizeSection}
+            summarizingId={sectionSummaryId}
+          />
+        </section>
+      ) : null}
+
+      {!isPdf && summary ? (
         <>
           <section className="record-section">
             <div className="section-heading">
@@ -1962,7 +2294,7 @@ function RecordView({
             </section>
           ) : null}
         </>
-      ) : (
+      ) : !isPdf ? (
         <section className="record-section">
           <div className="section-heading">
             <span>知识卡</span>
@@ -1973,15 +2305,17 @@ function RecordView({
               : '原文快照已经保存；点击上方“生成全文总览”即可整理全文、概念与对话。'}
           </p>
         </section>
-      )}
+      ) : null}
 
-      <section className="record-section">
-        <div className="section-heading">
-          <span>章节笔记</span>
-          <span>{outline.length} 个顶层章节</span>
-        </div>
-        <OutlineTree nodes={outline} summary={summary} onJump={onJump} />
-      </section>
+      {!isPdf ? (
+        <section className="record-section">
+          <div className="section-heading">
+            <span>章节笔记</span>
+            <span>{outline.length} 个顶层章节</span>
+          </div>
+          <OutlineTree nodes={outline} summary={summary} onJump={onJump} />
+        </section>
+      ) : null}
 
       {pageImages.length > 0 ? (
         <section className="record-section">
